@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ========== 通知栏用色（深色模式） ========== -->
+    <color name="notif_bg">#FF1A1B1F</color>
+    <color name="notif_card_bg">#FF2A2B2F</color>
+    <color name="notif_text_primary">#FFE3E2E6</color>
+    <color name="notif_text_secondary">#FFC4C6D0</color>
+    <color name="notif_progress_track">#FF44474F</color>
+    <color name="notif_btn_wrong_bg">#FF3A3030</color>
+    <color name="notif_btn_wrong_text">#FFFFB4AB</color>
+    <color name="notif_btn_right_bg">#FFB0C6FF</color>
+    <color name="notif_btn_right_text">#FF002E69</color>
+    <color name="notif_btn_speak_bg">#FF004193</color>
+    <color name="notif_btn_speak_text">#FFDBE4FF</color>
+</resources>
