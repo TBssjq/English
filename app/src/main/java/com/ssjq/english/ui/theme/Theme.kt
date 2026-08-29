@@ -11,9 +11,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowInsetsControllerCompat
+import com.ssjq.english.data.UserManager
+import java.util.Calendar
 
 /**
  * Fallback 静态配色（Android < 12 或关闭动态取色时使用）
@@ -73,25 +77,42 @@ private val FallbackDarkColorScheme = darkColorScheme(
     outlineVariant = OutlineVariantDark,
 )
 
+/**
+ * 根据当前时间判断是否使用暗色主题：
+ * 06:00-18:00 使用亮色主题，18:00-次日06:00 使用暗色主题。
+ */
+fun isNightByTime(): Boolean {
+    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+    return hour < 6 || hour >= 18
+}
+
 @Composable
 fun EnglishTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean? = null,
     // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    // 响应式观察主题变化
+    val userDarkTheme by UserManager.darkThemeFlow.collectAsState()
+    val effectiveDarkTheme = when (darkTheme ?: userDarkTheme) {
+        true -> true
+        false -> false
+        null -> isSystemInDarkTheme() || isNightByTime()
+    }
+
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            if (effectiveDarkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
 
-        darkTheme -> FallbackDarkColorScheme
+        effectiveDarkTheme -> FallbackDarkColorScheme
         else -> FallbackLightColorScheme
     }
 
     // 自定义扩展颜色（演示 CompositionLocal）：渐变画刷等 M3 默认未提供的值
-    val extendedColors = if (darkTheme) ExtendedDarkColors else ExtendedLightColors
+    val extendedColors = if (effectiveDarkTheme) ExtendedDarkColors else ExtendedLightColors
 
     // 系统栏图标颜色适配：浅色模式图标深色，深色模式图标浅色
     // 绝不使用已废弃的 window.statusBarColor，只用 WindowInsetsControllerCompat 控制图标外观
@@ -101,8 +122,8 @@ fun EnglishTheme(
             val window = (view.context as Activity).window
             val controller = WindowInsetsControllerCompat(window, view)
             // true = 状态栏图标为深色（适用于浅色背景）；false = 浅色图标（适用于深色背景）
-            controller.isAppearanceLightStatusBars = !darkTheme
-            controller.isAppearanceLightNavigationBars = !darkTheme
+            controller.isAppearanceLightStatusBars = !effectiveDarkTheme
+            controller.isAppearanceLightNavigationBars = !effectiveDarkTheme
         }
     }
 

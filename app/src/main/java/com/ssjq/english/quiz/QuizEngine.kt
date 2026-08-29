@@ -143,6 +143,17 @@ object QuizEngine {
                     phonetic = word.usPhone ?: word.ukPhone ?: "",
                 )
             }
+            is QuizMode.AudioSpelling -> {
+                QuizQuestion(
+                    id = id,
+                    word = word,
+                    mode = mode,
+                    options = emptyList(),
+                    correctAnswer = word.headWord,
+                    promptText = "请听发音拼写单词",
+                    phonetic = word.usPhone ?: word.ukPhone ?: "",
+                )
+            }
         }
     }
 
@@ -206,7 +217,7 @@ object QuizEngine {
      * - 忽略连字符差异
      * - 完全一致 → Correct
      * - 编辑距离 ≤ 1 → AlmostCorrect
-     * - 否则 → Wrong
+     * - 否则 → Wrong（包含字母级差异信息）
      */
     fun checkSpelling(userInput: String, correct: String): AnswerResult {
         val normalizedUser = normalizeForCompare(userInput)
@@ -216,8 +227,21 @@ object QuizEngine {
         return if (dist <= 1) {
             AnswerResult.AlmostCorrect("差一点就对了！正确拼写：$correct")
         } else {
-            AnswerResult.Wrong(userAnswer = userInput, correct = correct)
+            val diffInfo = computeCharDiff(userInput, correct)
+            AnswerResult.Wrong(userAnswer = userInput, correct = correct, diffInfo = diffInfo)
         }
+    }
+
+    /** 计算字母级差异：逐字符比较，标记错误字母 */
+    private fun computeCharDiff(user: String, correct: String): List<CharDiff> {
+        val result = mutableListOf<CharDiff>()
+        val maxLen = maxOf(user.length, correct.length)
+        for (i in 0 until maxLen) {
+            val userChar = user.getOrNull(i) ?: ' '
+            val correctChar = correct.getOrNull(i) ?: ' '
+            result.add(CharDiff(userChar, userChar.equals(correctChar, ignoreCase = true)))
+        }
+        return result
     }
 
     /** 标准化：去首尾空格、转小写、去连字符 */

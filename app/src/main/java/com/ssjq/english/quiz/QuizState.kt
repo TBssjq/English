@@ -24,9 +24,20 @@ class QuizState(
     private val questionCount: Int,
     /** null = 4 种模式随机；非 null = 固定该模式 */
     private val fixedMode: QuizMode? = null,
+    /** 是否自动播放发音 */
+    autoPlayAudio: Boolean = false,
 ) {
     var uiState by mutableStateOf(QuizUiState(isLoading = true, selectedMode = fixedMode))
         private set
+
+    private var _autoPlayAudio by mutableStateOf(autoPlayAudio)
+    var autoPlayAudio: Boolean
+        get() = _autoPlayAudio
+        private set(value) { _autoPlayAudio = value }
+
+    fun setAutoPlayAudioEnabled(enabled: Boolean) {
+        _autoPlayAudio = enabled
+    }
 
     private var questions: List<QuizQuestion> = emptyList()
     private val modeStats = mutableMapOf<QuizMode, Pair<Int, Int>>()
@@ -73,9 +84,11 @@ class QuizState(
                 selectedMode = fixedMode,
             )
         }
-        // 第一题如果是 AudioSelect，自动播放（注意：传英文单词而非 correctAnswer，因为后者在 AudioSelect 模式下是中文释义）
-        if (questions.isNotEmpty() && questions[0].mode is QuizMode.AudioSelect) {
-            speak(questions[0].word.headWord, type = 2)
+        // 自动播放发音：如果开启了自动播放，或者是 AudioSelect 模式
+        if (questions.isNotEmpty()) {
+            if (autoPlayAudio || questions[0].mode is QuizMode.AudioSelect) {
+                speak(questions[0].word.headWord, type = 2)
+            }
         }
     }
 
@@ -142,8 +155,8 @@ class QuizState(
             spellingInput = "",
             selectedOption = null,
         )
-        // 自动播放音频（仅 AudioSelect 模式，传英文单词）
-        if (nextQ.mode is QuizMode.AudioSelect) {
+        // 自动播放发音：如果开启了自动播放，或者是 AudioSelect 模式
+        if (autoPlayAudio || nextQ.mode is QuizMode.AudioSelect) {
             speak(nextQ.word.headWord, type = 2)
         }
     }
@@ -166,9 +179,9 @@ class QuizState(
             uiState = uiState.copy(isFinished = true)
             return
         }
-        loadedWords = wrong
         val count = wrong.size.coerceAtLeast(1)
         questions = QuizEngine.generateQuestions(wrong, count, fixedMode = fixedMode)
+        loadedWords = questions.map { it.word }.distinct().ifEmpty { wrong }
         modeStats.clear()
         questions.groupBy { it.mode }.forEach { (mode, qs) ->
             modeStats[mode] = 0 to qs.size
@@ -184,7 +197,6 @@ class QuizState(
         if (questions.isNotEmpty() && questions[0].mode is QuizMode.AudioSelect) {
             speak(questions[0].word.headWord, type = 2)
         }
-        loadedWords = questions.map { it.word }.distinct().ifEmpty { wrong }
     }
 
     private fun updateStats(mode: QuizMode, correct: Boolean) {

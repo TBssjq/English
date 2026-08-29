@@ -2,6 +2,10 @@
 
 package com.ssjq.english.ui.search
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,11 +15,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,13 +46,26 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordDetail
+import com.ssjq.english.ui.common.LiquidGlassCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -63,6 +82,8 @@ fun SearchScreen(
     var keyword by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<WordDetail>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
+    // 液态玻璃背景采样源
+    val liquidBackdrop = rememberLayerBackdrop()
 
     fun doSearch() {
         if (keyword.isBlank()) return
@@ -77,7 +98,46 @@ fun SearchScreen(
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 背景层：渐变 + 彩色光斑
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(liquidBackdrop),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                MaterialTheme.colorScheme.surface,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .size(180.dp)
+                    .offset(x = (-40).dp, y = 100.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+            )
+            Box(
+                Modifier
+                    .size(140.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 50.dp, y = 200.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+            )
+        }
+
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text("搜索") },
@@ -120,19 +180,28 @@ fun SearchScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     items(results, key = { it.wordId }) { word ->
-                        SearchResultCard(word = word, onClick = { onWordClick(word.wordId) })
+                        SearchResultCard(word = word, backdrop = liquidBackdrop, onClick = { onWordClick(word.wordId) })
                     }
                 }
             }
         }
     }
+    }
 }
 
 @Composable
-private fun SearchResultCard(word: WordDetail, onClick: () -> Unit) {
-    OutlinedCard(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() },
+private fun SearchResultCard(word: WordDetail, backdrop: Backdrop, onClick: () -> Unit) {
+    LiquidGlassCard(
+        backdrop = backdrop,
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
+        blurRadius = 6.dp,
+        lensHeight = 8.dp,
+        lensAmount = 14.dp,
+        surfaceColor = Color.White.copy(alpha = 0.15f),
+        shadow = glassShadow(10.dp, 0.1f),
+        highlight = Highlight.Default.copy(alpha = 0.5f),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

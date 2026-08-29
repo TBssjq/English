@@ -2,6 +2,9 @@
 
 package com.ssjq.english.ui.wordlist
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,7 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -53,8 +57,8 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
@@ -74,6 +78,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -82,11 +88,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.R
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordListItem
 import com.ssjq.english.ui.common.FancyToast
 import com.ssjq.english.ui.common.ImportExportDialog
+import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.common.ShimmerBox
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -119,17 +136,7 @@ fun WordListScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
     var showQuizDialog by remember { mutableStateOf(false) }
-    var showFancyToast by remember { mutableStateOf(false) }
     var showImportExportDialog by remember { mutableStateOf(false) }
-
-    // 通知权限申请：后台复习需要（Android 13+）
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            com.ssjq.english.service.LearningForegroundService.start(context, dbName)
-        }
-    }
 
     fun refreshCounts() {
         wrongCount = com.ssjq.english.data.UserLibrary.wrongCount(dbName)
@@ -140,7 +147,7 @@ fun WordListScreen(
         wrongIds = com.ssjq.english.data.UserLibrary.wrongWords(dbName).map { it.wordId }.toSet()
         favoriteIds = com.ssjq.english.data.UserLibrary.favorites(dbName).map { it.wordId }.toSet()
     }
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refreshCounts()
@@ -166,8 +173,56 @@ fun WordListScreen(
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+    // 液态玻璃背景采样源
+    val liquidBackdrop = rememberLayerBackdrop()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 背景层：渐变 + 彩色光斑（玻璃折射的采样源）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(liquidBackdrop),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.tertiaryContainer,
+                                MaterialTheme.colorScheme.surface,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .size(200.dp)
+                    .offset(x = (-40).dp, y = 100.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+            )
+            Box(
+                Modifier
+                    .size(160.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 60.dp, y = 200.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)),
+            )
+            Box(
+                Modifier
+                    .size(140.dp)
+                    .offset(x = 50.dp, y = 450.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+            )
+        }
+
+        Scaffold(
+            modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+            containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             LargeTopAppBar(
@@ -185,7 +240,7 @@ fun WordListScreen(
                     IconButton(onClick = { onOpenLibrary(com.ssjq.english.ui.nav.LibraryType.WRONG) }) {
                         BadgedIconBox(
                             count = wrongCount,
-                            icon = { Icon(Icons.Filled.MenuBook, "错题本") },
+                            icon = { Icon(Icons.AutoMirrored.Filled.MenuBook, "错题本") },
                         )
                     }
                     IconButton(onClick = { onOpenLibrary(com.ssjq.english.ui.nav.LibraryType.FAVORITE) }) {
@@ -267,32 +322,38 @@ fun WordListScreen(
         },
         floatingActionButton = {
             Row(verticalAlignment = Alignment.Bottom) {
-                FloatingActionButton(
-                    onClick = {
-                        if (com.ssjq.english.service.NotificationPermission.hasPermission(context)) {
-                            com.ssjq.english.service.LearningForegroundService.start(context, dbName)
-                            showFancyToast = true
-                        } else {
-                            notificationPermissionLauncher.launch(
-                                com.ssjq.english.service.NotificationPermission.permission
-                            )
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                    modifier = Modifier.padding(end = 12.dp),
-                ) {
-                    Icon(Icons.Filled.Headphones, contentDescription = "后台复习")
-                }
-                // 开始背诵按钮（主要 FAB）
-                ExtendedFloatingActionButton(
+                // 开始背诵按钮（液态玻璃 FAB）
+                LiquidGlassCard(
+                    backdrop = liquidBackdrop,
                     onClick = { onStartStudy() },
-                    text = {
+                    shape = RoundedCornerShape(28.dp),
+                    blurRadius = 8.dp,
+                    lensHeight = 12.dp,
+                    lensAmount = 20.dp,
+                    surfaceColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                    shadow = glassShadow(16.dp, 0.25f),
+                    highlight = Highlight.Default.copy(alpha = 0.8f),
+                    innerShadow = glassInnerShadow(6.dp, 0.08f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow, null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
                         val progressed = studyTotal > 0 && studyIndex in 1 until studyTotal
-                        Text(if (progressed) "继续背诵 ($studyIndex/$studyTotal)" else "开始背诵")
-                    },
-                    icon = { Icon(Icons.Filled.PlayArrow, null) },
-                )
+                        Text(
+                            if (progressed) "继续背诵 ($studyIndex/$studyTotal)" else "开始背诵",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
             }
         },
     ) { padding ->
@@ -320,6 +381,7 @@ fun WordListScreen(
                 item(key = "quiz-entry", span = { GridItemSpan(maxLineSpan) }) {
                     QuizEntryCard(
                         onClick = { showQuizDialog = true },
+                        backdrop = liquidBackdrop,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 }
@@ -337,6 +399,7 @@ fun WordListScreen(
                             isWrong = word.wordId in wrongIds,
                             isFavorite = word.wordId in favoriteIds,
                             onClick = { onWordClick(word.wordId) },
+                            backdrop = liquidBackdrop,
                             modifier = Modifier.animateItem(),
                         )
                     }
@@ -344,6 +407,7 @@ fun WordListScreen(
             }
         }
     }
+    } // end of Box (liquid glass background)
 
     // 清空进度确认对话框（Scaffold 之外，避免 padding 干扰）
     if (showResetDialog) {
@@ -371,12 +435,6 @@ fun WordListScreen(
             onSelect = { mode -> onStartQuiz(mode) },
         )
     }
-
-    FancyToast(
-        message = "开始后台背诵啦",
-        visible = showFancyToast,
-        onDismiss = { showFancyToast = false },
-    )
 
     ImportExportDialog(
         visible = showImportExportDialog,
@@ -407,27 +465,29 @@ private fun WordRow(
     isWrong: Boolean,
     isFavorite: Boolean,
     onClick: () -> Unit,
+    backdrop: Backdrop,
     modifier: Modifier = Modifier,
 ) {
-    Card(
+    LiquidGlassListItem(
+        backdrop = backdrop,
+        onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clickable { onClick() },
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
     ) {
-        ListItem(
-            leadingContent = { StatusIndicator(isWrong = isWrong, isFavorite = isFavorite) },
-            headlineContent = {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusIndicator(isWrong = isWrong, isFavorite = isFavorite)
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         word.headWord,
                         fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                     if (isFavorite) {
                         Spacer(Modifier.width(6.dp))
@@ -439,26 +499,22 @@ private fun WordRow(
                         )
                     }
                 }
-            },
-            supportingContent = {
                 Text(
                     word.tranCn ?: "No.${word.wordRank}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
-            },
-            trailingContent = {
-                if (word.star > 0) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Star, null, tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp))
-                        Text(" ${word.star}", style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary)
-                    }
+            }
+            if (word.star > 0) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Star, null, tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp))
+                    Text(" ${word.star}", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary)
                 }
-            },
-        )
+            }
+        }
     }
 }
 
@@ -540,15 +596,21 @@ private fun BadgedIconBox(count: Int, icon: @Composable () -> Unit) {
 @Composable
 private fun QuizEntryCard(
     onClick: () -> Unit,
+    backdrop: Backdrop,
     modifier: Modifier = Modifier,
 ) {
-    Card(
+    LiquidGlassCard(
+        backdrop = backdrop,
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
-        colors = androidx.compose.material3.CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-        ),
         shape = RoundedCornerShape(20.dp),
+        blurRadius = 8.dp,
+        lensHeight = 14.dp,
+        lensAmount = 24.dp,
+        surfaceColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+        shadow = glassShadow(18.dp, 0.18f),
+        highlight = Highlight.Default.copy(alpha = 0.7f),
+        innerShadow = glassInnerShadow(8.dp, 0.06f),
     ) {
         Row(
             modifier = Modifier

@@ -2,6 +2,9 @@
 
 package com.ssjq.english.ui.library
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -41,6 +45,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -48,9 +54,19 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.R
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
+import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.nav.LibraryType
 
 /**
@@ -74,8 +90,49 @@ fun LibraryScreen(
     fun refresh() { entries = loadEntries(dbName, type) }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    // 液态玻璃背景采样源
+    val liquidBackdrop = rememberLayerBackdrop()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 背景层：渐变 + 彩色光斑
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(liquidBackdrop),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                MaterialTheme.colorScheme.surface,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .size(180.dp)
+                    .offset(x = (-40).dp, y = 100.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+            )
+            Box(
+                Modifier
+                    .size(140.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 50.dp, y = 200.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+            )
+        }
+
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        modifier = Modifier.fillMaxSize().nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = Color.Transparent,
         topBar = {
             LargeTopAppBar(
                 title = { Text("$title (${entries.size})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -109,6 +166,7 @@ fun LibraryScreen(
                     LibraryRow(
                         entry = entry,
                         type = type,
+                        backdrop = liquidBackdrop,
                         onClick = { onWordClick(entry.wordId) },
                         onDelete = {
                             when (type) {
@@ -122,6 +180,7 @@ fun LibraryScreen(
             }
         }
     }
+    }
 }
 
 private fun loadEntries(dbName: String, type: LibraryType): List<WordEntry> = when (type) {
@@ -133,12 +192,21 @@ private fun loadEntries(dbName: String, type: LibraryType): List<WordEntry> = wh
 private fun LibraryRow(
     entry: WordEntry,
     type: LibraryType,
+    backdrop: Backdrop,
     onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    OutlinedCard(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clickable { onClick() },
+    LiquidGlassCard(
+        backdrop = backdrop,
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
+        blurRadius = 6.dp,
+        lensHeight = 8.dp,
+        lensAmount = 14.dp,
+        surfaceColor = Color.White.copy(alpha = 0.15f),
+        shadow = glassShadow(10.dp, 0.1f),
+        highlight = Highlight.Default.copy(alpha = 0.5f),
     ) {
         ListItem(
             leadingContent = {

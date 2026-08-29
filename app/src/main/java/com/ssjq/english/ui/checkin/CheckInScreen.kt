@@ -2,6 +2,9 @@
 
 package com.ssjq.english.ui.checkin
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -22,6 +25,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,7 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Spa
 import androidx.compose.material.icons.filled.Star
@@ -67,10 +71,22 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.R
 import com.ssjq.english.data.CheckInManager
 import com.ssjq.english.data.CheckInRecord
 import com.ssjq.english.data.CheckInStats
+import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassListItem
+import androidx.compose.material3.Surface
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -85,6 +101,8 @@ fun CheckInScreen(onBack: () -> Unit) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var stats by remember { mutableStateOf(CheckInManager.stats()) }
     var recent by remember { mutableStateOf(CheckInManager.recentDays(84)) } // 12 周
+    // 液态玻璃背景采样源
+    val liquidBackdrop = rememberLayerBackdrop()
 
     // 进入页面时刷新一次（学习行为可能在其他页面已触发打卡）
     LaunchedEffect(Unit) {
@@ -92,8 +110,53 @@ fun CheckInScreen(onBack: () -> Unit) {
         recent = CheckInManager.recentDays(84)
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 背景层：渐变 + 彩色光斑
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(liquidBackdrop),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.tertiaryContainer,
+                                MaterialTheme.colorScheme.surface,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .size(200.dp)
+                    .offset(x = (-50).dp, y = 100.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+            )
+            Box(
+                Modifier
+                    .size(160.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 60.dp, y = 220.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)),
+            )
+            Box(
+                Modifier
+                    .size(140.dp)
+                    .offset(x = 40.dp, y = 500.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+            )
+        }
+
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = Color.Transparent,
         topBar = {
             LargeTopAppBar(
                 title = { Text("每日打卡", fontWeight = FontWeight.Bold) },
@@ -112,16 +175,16 @@ fun CheckInScreen(onBack: () -> Unit) {
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
         ) {
             // 今日状态英雄卡片
-            item(key = "hero") { TodayHeroCard(stats) }
+            item(key = "hero") { TodayHeroCard(stats, liquidBackdrop) }
 
             // 快速统计三连卡
-            item(key = "quick-stats") { QuickStatsRow(stats) }
+            item(key = "quick-stats") { QuickStatsRow(stats, liquidBackdrop) }
 
             // 贡献热力图
-            item(key = "heatmap") { ContributionHeatmap(recent) }
+            item(key = "heatmap") { ContributionHeatmap(recent, liquidBackdrop) }
 
             // 成就徽章
-            item(key = "achievements") { AchievementBadges(stats) }
+            item(key = "achievements") { AchievementBadges(stats, liquidBackdrop) }
 
             // 近期记录
             item(key = "recent-header") {
@@ -147,27 +210,33 @@ fun CheckInScreen(onBack: () -> Unit) {
                 }
             } else {
                 items(last7.reversed(), key = { it.date }) { record ->
-                    RecentRecordItem(record)
+                    RecentRecordItem(record, liquidBackdrop)
                 }
             }
         }
     }
+    } // end of Box (liquid glass background)
 }
 
 // ---------------- 今日状态英雄卡片 ----------------
 
 @Composable
-private fun TodayHeroCard(stats: CheckInStats) {
+private fun TodayHeroCard(stats: CheckInStats, backdrop: Backdrop) {
     val today = stats.todayRecord
     val checkedIn = stats.isCheckedInToday
-    Card(
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (checkedIn)
-                MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
-        ),
+        blurRadius = 10.dp,
+        lensHeight = 16.dp,
+        lensAmount = 28.dp,
+        surfaceColor = (if (checkedIn)
+            MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant).copy(alpha = 0.55f),
+        shadow = glassShadow(24.dp, 0.2f),
+        highlight = Highlight.Default.copy(alpha = 0.8f),
+        innerShadow = glassInnerShadow(10.dp, 0.06f),
     ) {
         Box(
             modifier = Modifier
@@ -175,11 +244,11 @@ private fun TodayHeroCard(stats: CheckInStats) {
                 .background(
                     brush = Brush.linearGradient(
                         colors = if (checkedIn) listOf(
-                            MaterialTheme.colorScheme.primaryContainer,
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                         ) else listOf(
-                            MaterialTheme.colorScheme.surfaceVariant,
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f),
                         ),
                     ),
                 )
@@ -273,7 +342,7 @@ private fun FlameIcon(streak: Int, active: Boolean, modifier: Modifier = Modifie
 // ---------------- 快速统计三连卡 ----------------
 
 @Composable
-private fun QuickStatsRow(stats: CheckInStats) {
+private fun QuickStatsRow(stats: CheckInStats, backdrop: Backdrop) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -283,18 +352,21 @@ private fun QuickStatsRow(stats: CheckInStats) {
             icon = Icons.Filled.CalendarMonth,
             value = "${stats.totalDays}",
             label = "累计天数",
+            backdrop = backdrop,
         )
         StatMiniCard(
             modifier = Modifier.weight(1f),
-            icon = Icons.Filled.MenuBook,
+            icon = Icons.AutoMirrored.Filled.MenuBook,
             value = "${stats.totalWordsLearned}",
             label = "学习单词",
+            backdrop = backdrop,
         )
         StatMiniCard(
             modifier = Modifier.weight(1f),
             icon = Icons.Filled.Timer,
             value = "${stats.totalMinutes}",
             label = "累计分钟",
+            backdrop = backdrop,
         )
     }
 }
@@ -305,12 +377,18 @@ private fun StatMiniCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     value: String,
     label: String,
+    backdrop: Backdrop,
 ) {
-    Card(
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = modifier,
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        blurRadius = 5.dp,
+        lensHeight = 8.dp,
+        lensAmount = 14.dp,
+        surfaceColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        shadow = glassShadow(10.dp, 0.12f),
+        highlight = Highlight.Default.copy(alpha = 0.5f),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -341,14 +419,16 @@ private fun StatMiniCard(
 // ---------------- GitHub 风格贡献热力图 ----------------
 
 @Composable
-private fun ContributionHeatmap(records: List<CheckInRecord?>) {
+private fun ContributionHeatmap(records: List<CheckInRecord?>, backdrop: Backdrop) {
     // records 已按日期升序排列，长度 84（12 周）。热力图按列（周）排布，每列 7 天。
     val weeks = records.chunked(7)
-    Card(
+    // 热力图不使用液态玻璃，使用普通 Surface 以保证清晰可读
+    Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+        tonalElevation = 2.dp,
+        shadowElevation = 6.dp,
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -362,6 +442,7 @@ private fun ContributionHeatmap(records: List<CheckInRecord?>) {
                     "近 12 周学习热力图",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
             Spacer(Modifier.height(16.dp))
@@ -453,13 +534,18 @@ private fun heatColor(level: Int): Color {
 // ---------------- 成就徽章 ----------------
 
 @Composable
-private fun AchievementBadges(stats: CheckInStats) {
+private fun AchievementBadges(stats: CheckInStats, backdrop: Backdrop) {
     val achievements = remember(stats) { buildAchievements(stats) }
-    Card(
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        blurRadius = 6.dp,
+        lensHeight = 10.dp,
+        lensAmount = 18.dp,
+        surfaceColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+        shadow = glassShadow(14.dp, 0.15f),
+        highlight = Highlight.Default.copy(alpha = 0.6f),
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -474,6 +560,7 @@ private fun AchievementBadges(stats: CheckInStats) {
                     "成就徽章",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
             Spacer(Modifier.height(16.dp))
@@ -594,7 +681,7 @@ private fun BadgeItem(modifier: Modifier = Modifier, achievement: Achievement) {
 // ---------------- 近期记录项 ----------------
 
 @Composable
-private fun RecentRecordItem(record: CheckInRecord) {
+private fun RecentRecordItem(record: CheckInRecord, backdrop: Backdrop) {
     val dateFmt = remember { SimpleDateFormat("MM-dd EEE", Locale.getDefault()) }
     val date = remember(record.date) {
         runCatching {
@@ -602,11 +689,9 @@ private fun RecentRecordItem(record: CheckInRecord) {
             dateFmt.format(sdf.parse(record.date) ?: Date())
         }.getOrDefault(record.date)
     }
-    Card(
+    LiquidGlassListItem(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -620,7 +705,7 @@ private fun RecentRecordItem(record: CheckInRecord) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Filled.MenuBook, null,
+                    Icons.AutoMirrored.Filled.MenuBook, null,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.size(20.dp),
                 )
@@ -631,6 +716,7 @@ private fun RecentRecordItem(record: CheckInRecord) {
                     date,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(

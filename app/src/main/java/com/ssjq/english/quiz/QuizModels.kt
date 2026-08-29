@@ -8,9 +8,10 @@ sealed class QuizMode(val label: String, val weight: Float) {
     data object CnSelectEn : QuizMode("中选英", 0.25f)
     data object AudioSelect : QuizMode("听音辨意", 0.25f)
     data object Spelling : QuizMode("拼写测试", 0.15f)
+    data object AudioSpelling : QuizMode("听音拼写", 0.10f)
 
     companion object {
-        val all: List<QuizMode> = listOf(EnSelectCn, CnSelectEn, AudioSelect, Spelling)
+        val all: List<QuizMode> = listOf(EnSelectCn, CnSelectEn, AudioSelect, Spelling, AudioSpelling)
     }
 }
 
@@ -34,8 +35,13 @@ sealed class AnswerResult {
     data object Idle : AnswerResult()
     data object Correct : AnswerResult()
     data class AlmostCorrect(val tip: String) : AnswerResult()
-    data class Wrong(val userAnswer: String, val correct: String) : AnswerResult()
+    data class Wrong(val userAnswer: String, val correct: String, val diffInfo: List<CharDiff> = emptyList()) : AnswerResult()
 }
+
+data class CharDiff(
+    val char: Char,
+    val isCorrect: Boolean,
+)
 
 /** UI 状态 */
 data class QuizUiState(

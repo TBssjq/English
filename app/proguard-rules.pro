@@ -27,6 +27,7 @@
 }
 # 保留 Gson 数据类（用于 JSON 反序列化的 model）
 -keep class com.ssjq.english.data.AppVersion { *; }
+-keep class com.ssjq.english.data.NoticeData { *; }
 # 保留 TypeAdapter 及相关接口的实现
 -keep class * extends com.google.gson.TypeAdapter
 -keep class * implements com.google.gson.TypeAdapterFactory

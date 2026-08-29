@@ -1,5 +1,8 @@
 package com.ssjq.english.ui.common
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,6 +18,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -23,10 +28,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.highlight.Highlight
 import kotlinx.coroutines.delay
 
+private val ToastBrandColor = Color(0xFF00BCD4)
+
+/**
+ * 通用 Toast。
+ *
+ * @param backdrop 传入页面背景采样源时呈现液态玻璃样式；为 null 时降级为纯色样式，
+ *                 保证在尚未接入玻璃的页面同样可用。
+ */
 @Composable
-fun FancyToast(message: String, visible: Boolean, onDismiss: () -> Unit) {
+fun FancyToast(
+    message: String,
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    backdrop: Backdrop? = null,
+) {
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn() + slideInVertically { it },
@@ -38,27 +58,29 @@ fun FancyToast(message: String, visible: Boolean, onDismiss: () -> Unit) {
                 .padding(bottom = 80.dp),
             contentAlignment = Alignment.BottomCenter,
         ) {
-            Row(
-                modifier = Modifier
-                    .background(
-                        Color(0xFF00BCD4),
-                        RoundedCornerShape(24.dp),
-                    )
-                    .padding(horizontal = 20.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                androidx.compose.material3.Icon(
-                    Icons.Filled.CheckCircle,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    message,
-                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                )
+            if (backdrop != null) {
+                LiquidGlassCard(
+                    backdrop = backdrop,
+                    shape = RoundedCornerShape(24.dp),
+                    blurRadius = 6.dp,
+                    lensHeight = 8.dp,
+                    lensAmount = 14.dp,
+                    surfaceColor = ToastBrandColor.copy(alpha = 0.7f),
+                    shadow = glassShadow(12.dp, 0.25f),
+                    highlight = Highlight.Default.copy(alpha = 0.7f),
+                    innerShadow = glassInnerShadow(4.dp, 0.25f),
+                ) {
+                    ToastContent(message)
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .background(ToastBrandColor, RoundedCornerShape(24.dp))
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ToastContent(message)
+                }
             }
         }
     }
@@ -69,4 +91,20 @@ fun FancyToast(message: String, visible: Boolean, onDismiss: () -> Unit) {
             onDismiss()
         }
     }
+}
+
+@Composable
+private fun ToastContent(message: String) {
+    Icon(
+        Icons.Filled.CheckCircle,
+        contentDescription = null,
+        tint = Color.White,
+    )
+    Spacer(Modifier.width(10.dp))
+    Text(
+        message,
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.Medium,
+        color = Color.White,
+    )
 }

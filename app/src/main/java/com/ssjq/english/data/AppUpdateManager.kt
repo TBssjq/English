@@ -22,6 +22,24 @@ data class AppVersion(
     @SerializedName("forceUpdate") val forceUpdate: Boolean = false,
 )
 
+/**
+ * 公告数据：对应 log.json 返回的 JSON。
+ */
+data class NoticeData(
+    @SerializedName("title") val title: String,
+    @SerializedName("content") val content: String,
+    @SerializedName("is_force") val isForce: Boolean,
+    @SerializedName("btn_text") val btnText: String,
+    @SerializedName("url") val url: String,
+)
+
+/** 公告拉取结果 */
+enum class NoticeResult {
+    HAS_NOTICE,
+    NO_NOTICE,
+    NETWORK_ERROR,
+}
+
 /** 版本比较结果 */
 enum class UpdateResult {
     NEW_VERSION_AVAILABLE,
@@ -40,6 +58,9 @@ object AppUpdateManager {
     private const val VERSION_URL =
         "https://TBssjq.github.io/version/english.json"
 
+    private const val NOTICE_URL =
+        "https://TBssjq.github.io/version/english.log.json"
+
     private val okHttp: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -48,6 +69,25 @@ object AppUpdateManager {
     }
 
     private val gson: Gson by lazy { Gson() }
+
+    /**
+     * 从服务端获取公告信息。
+     * @return Pair(公告数据, 结果)
+     */
+    suspend fun fetchNotice(): Pair<NoticeData?, NoticeResult> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url(NOTICE_URL).get().build()
+                val response = okHttp.newCall(request).execute()
+                if (!response.isSuccessful) return@withContext null to NoticeResult.NETWORK_ERROR
+                val body = response.body?.string() ?: return@withContext null to NoticeResult.NETWORK_ERROR
+                val notice = gson.fromJson(body, NoticeData::class.java)
+                notice to NoticeResult.HAS_NOTICE
+            } catch (e: Exception) {
+                null to NoticeResult.NETWORK_ERROR
+            }
+        }
+    }
 
     /**
      * 从服务端获取最新版本信息。

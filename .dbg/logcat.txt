@@ -1,0 +1,6 @@
+--------- beginning of main
+07-10 20:41:17.983   735   735 D EnglishDebug: [C][AppNav.kt:74] AppNav isRegistered=false, firstLaunch=true, hasUsername=false | {}
+07-10 20:41:17.984   735   735 D EnglishDebug: [C][AppNav.kt:78] Showing RegisterScreen | {}
+07-10 20:41:21.804   735   735 D EnglishDebug: [C][RegisterScreen.kt:73] Register save clicked, username=你好, firstLaunch=true | {}
+07-10 20:41:21.805   735   735 D EnglishDebug: [C][RegisterScreen.kt:90] User persisted, firstLaunch=false, username=你好, isRegistered=true | {}
+07-10 20:41:21.805   735   735 D EnglishDebug: [C][AppNav.kt:82] RegisterScreen onRegisterComplete called, current will be set to Home | {}

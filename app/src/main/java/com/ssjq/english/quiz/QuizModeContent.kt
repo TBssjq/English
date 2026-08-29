@@ -47,6 +47,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -172,6 +175,15 @@ fun QuizModeContent(
             modifier = modifier,
         )
         is QuizMode.Spelling -> SpellingContent(
+            question = question,
+            answerResult = answerResult,
+            input = spellingInput,
+            onInputChange = onSpellingChange,
+            onSubmit = onSpellingSubmit,
+            onReplayAudio = onReplayAudio,
+            modifier = modifier,
+        )
+        is QuizMode.AudioSpelling -> AudioSpellingContent(
             question = question,
             answerResult = answerResult,
             input = spellingInput,
@@ -386,6 +398,23 @@ private fun SpellingContent(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(16.dp))
+        if (answerResult is AnswerResult.Wrong && answerResult.diffInfo.isNotEmpty()) {
+            Text(
+                buildDiffText(answerResult.diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "标红为错误字母",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = onSubmit,
@@ -435,6 +464,144 @@ private fun OptionsList(
                 state = state,
                 onClick = { onSelect(option) },
             )
+        }
+    }
+}
+
+/** 构建字母级差异文本：错误字母标红 */
+private fun buildDiffText(
+    diffInfo: List<com.ssjq.english.quiz.CharDiff>,
+    correctColor: androidx.compose.ui.graphics.Color,
+    errorColor: androidx.compose.ui.graphics.Color,
+): AnnotatedString {
+    return buildAnnotatedString {
+        diffInfo.forEach { diff ->
+            val style = if (diff.isCorrect) {
+                SpanStyle(color = correctColor)
+            } else {
+                SpanStyle(color = errorColor, fontWeight = FontWeight.Bold)
+            }
+            pushStyle(style)
+            append(diff.char)
+            pop()
+        }
+    }
+}
+
+/** 听音拼写：播放发音 + 输入框 + 字母级错误标红 */
+@Composable
+private fun AudioSpellingContent(
+    question: QuizQuestion,
+    answerResult: AnswerResult,
+    input: String,
+    onInputChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+    onReplayAudio: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val idle = answerResult is AnswerResult.Idle
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(24.dp))
+        Text(
+            question.promptText,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+        Spacer(Modifier.height(24.dp))
+        IconButton(
+            onClick = onReplayAudio,
+            modifier = Modifier.size(96.dp)
+                .background(MaterialTheme.colorScheme.primary, CircleShape),
+        ) {
+            Image(
+                painter = painterResource(R.drawable.phonograph),
+                contentDescription = "播放发音",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(52.dp),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "点击重播",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (question.phonetic.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "/${question.phonetic}/",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(32.dp))
+        OutlinedTextField(
+            value = input,
+            onValueChange = onInputChange,
+            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+            placeholder = { Text("输入英文单词…") },
+            textStyle = MaterialTheme.typography.titleLarge.copy(
+                fontFamily = FontFamily.Serif,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            ),
+            singleLine = true,
+            enabled = idle,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Ascii,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { if (idle && input.isNotBlank()) onSubmit() }),
+            shape = RoundedCornerShape(16.dp),
+            colors = TextFieldDefaults.colors(
+                focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
+            ),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "已输入 ${input.length} / 目标 ${question.correctAnswer.length} 字符",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(16.dp))
+        if (answerResult is AnswerResult.Wrong && answerResult.diffInfo.isNotEmpty()) {
+            Text(
+                buildDiffText(answerResult.diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = FontFamily.Serif,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "标红为错误字母",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(Modifier.height(24.dp))
+        Button(
+            onClick = onSubmit,
+            enabled = idle && input.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Text("提交答案", fontWeight = FontWeight.SemiBold)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (idle) {
+            try { focusRequester.requestFocus() } catch (_: Throwable) {}
         }
     }
 }

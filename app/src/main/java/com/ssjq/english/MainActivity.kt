@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.ssjq.english.data.CheckInManager
 import com.ssjq.english.data.UserLibrary
+import com.ssjq.english.data.UserManager
 import com.ssjq.english.ui.AppNav
 import com.ssjq.english.ui.theme.EnglishTheme
 
@@ -15,6 +16,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         UserLibrary.init(this)
         CheckInManager.init(this)
+        UserManager.init(this)
         setContent {
             EnglishTheme {
                 AppNav()

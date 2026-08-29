@@ -1,5 +1,8 @@
 package com.ssjq.english.quiz
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -25,8 +28,6 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -37,6 +38,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
+import com.ssjq.english.ui.common.LiquidGlassCard
 
 /**
  * 答题反馈卡片：底部滑入，显示正确/错误/差一点。
@@ -51,6 +60,7 @@ fun AnswerFeedbackCard(
     correctAnswer: String,
     exampleSentence: String? = null,
     onNext: () -> Unit,
+    backdrop: Backdrop,
     modifier: Modifier = Modifier,
 ) {
     AnimatedContent(
@@ -68,13 +78,14 @@ fun AnswerFeedbackCard(
             Box(Modifier.height(0.dp))
         } else {
             when (result) {
-                is AnswerResult.Correct -> CorrectFeedback(onNext)
-                is AnswerResult.AlmostCorrect -> AlmostCorrectFeedback(result.tip, onNext)
+                is AnswerResult.Correct -> CorrectFeedback(onNext, backdrop)
+                is AnswerResult.AlmostCorrect -> AlmostCorrectFeedback(result.tip, onNext, backdrop)
                 is AnswerResult.Wrong -> WrongFeedback(
                     userAnswer = result.userAnswer,
                     correctAnswer = correctAnswer,
                     exampleSentence = exampleSentence,
                     onNext = onNext,
+                    backdrop = backdrop,
                 )
                 is AnswerResult.Idle -> Box(Modifier.height(0.dp))
             }
@@ -83,14 +94,18 @@ fun AnswerFeedbackCard(
 }
 
 @Composable
-private fun CorrectFeedback(onNext: () -> Unit) {
-    Card(
+private fun CorrectFeedback(onNext: () -> Unit, backdrop: Backdrop) {
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        blurRadius = 8.dp,
+        lensHeight = 12.dp,
+        lensAmount = 20.dp,
+        surfaceColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+        shadow = glassShadow(16.dp, 0.2f),
+        highlight = Highlight.Default.copy(alpha = 0.7f),
+        innerShadow = glassInnerShadow(6.dp, 0.06f),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -124,14 +139,18 @@ private fun CorrectFeedback(onNext: () -> Unit) {
 }
 
 @Composable
-private fun AlmostCorrectFeedback(tip: String, onNext: () -> Unit) {
-    Card(
+private fun AlmostCorrectFeedback(tip: String, onNext: () -> Unit, backdrop: Backdrop) {
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        blurRadius = 8.dp,
+        lensHeight = 12.dp,
+        lensAmount = 20.dp,
+        surfaceColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f),
+        shadow = glassShadow(16.dp, 0.2f),
+        highlight = Highlight.Default.copy(alpha = 0.7f),
+        innerShadow = glassInnerShadow(6.dp, 0.06f),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -176,14 +195,19 @@ private fun WrongFeedback(
     correctAnswer: String,
     exampleSentence: String?,
     onNext: () -> Unit,
+    backdrop: Backdrop,
 ) {
-    Card(
+    LiquidGlassCard(
+        backdrop = backdrop,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        blurRadius = 8.dp,
+        lensHeight = 12.dp,
+        lensAmount = 20.dp,
+        surfaceColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+        shadow = glassShadow(16.dp, 0.2f),
+        highlight = Highlight.Default.copy(alpha = 0.7f),
+        innerShadow = glassInnerShadow(6.dp, 0.06f),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

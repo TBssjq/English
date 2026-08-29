@@ -27,6 +27,12 @@ object LibraryFileManager {
             put("contentType", data.contentType.name)
             put("wrongWords", entriesToJson(data.wrongWords))
             put("favorites", entriesToJson(data.favorites))
+            put("totalDays", data.totalDays)
+            put("currentStreak", data.currentStreak)
+            put("longestStreak", data.longestStreak)
+            put("totalWordsLearned", data.totalWordsLearned)
+            put("totalWordsMastered", data.totalWordsMastered)
+            put("totalMinutes", data.totalMinutes)
         }.toString(2)
     }
 
@@ -50,7 +56,13 @@ object LibraryFileManager {
             }
             val wrongWords = jsonToEntries(root.optJSONArray("wrongWords"))
             val favorites = jsonToEntries(root.optJSONArray("favorites"))
-            ExportData(version, exportTime, scope, scopeLabel, contentType, wrongWords, favorites)
+            val totalDays = root.optInt("totalDays", 0)
+            val currentStreak = root.optInt("currentStreak", 0)
+            val longestStreak = root.optInt("longestStreak", 0)
+            val totalWordsLearned = root.optInt("totalWordsLearned", 0)
+            val totalWordsMastered = root.optInt("totalWordsMastered", 0)
+            val totalMinutes = root.optInt("totalMinutes", 0)
+            ExportData(version, exportTime, scope, scopeLabel, contentType, wrongWords, favorites, totalDays, currentStreak, longestStreak, totalWordsLearned, totalWordsMastered, totalMinutes)
         } catch (e: Exception) {
             Log.e(TAG, "deserializeFromJson failed: ${e.message}", e)
             null

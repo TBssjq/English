@@ -17,13 +17,19 @@ enum class ExportContentType {
 }
 
 data class ExportData(
-    val version: Int = 1,
+    val version: Int = 2,
     val exportTime: Long = System.currentTimeMillis(),
     val scope: ExportScope = ExportScope.ALL,
     val scopeName: String = "",
     val contentType: ExportContentType = ExportContentType.BOTH,
     val wrongWords: List<WordEntry> = emptyList(),
     val favorites: List<WordEntry> = emptyList(),
+    val totalDays: Int = 0,
+    val currentStreak: Int = 0,
+    val longestStreak: Int = 0,
+    val totalWordsLearned: Int = 0,
+    val totalWordsMastered: Int = 0,
+    val totalMinutes: Int = 0,
 )
 
 enum class ImportConflictStrategy {
@@ -147,14 +153,21 @@ object LibraryRepository {
         val (wrong, fav) = getAllEntriesUnsafe()
         val filteredWrong = if (contentType == ExportContentType.FAVORITE_ONLY) emptyList() else wrong
         val filteredFav = if (contentType == ExportContentType.WRONG_ONLY) emptyList() else fav
+        val stats = CheckInManager.stats()
         ExportData(
-            version = 1,
+            version = 2,
             exportTime = System.currentTimeMillis(),
             scope = ExportScope.ALL,
             scopeName = "全部词库",
             contentType = contentType,
             wrongWords = filteredWrong,
             favorites = filteredFav,
+            totalDays = stats.totalDays,
+            currentStreak = stats.currentStreak,
+            longestStreak = stats.longestStreak,
+            totalWordsLearned = stats.totalWordsLearned,
+            totalWordsMastered = stats.totalWordsMastered,
+            totalMinutes = stats.totalMinutes,
         )
     }
 

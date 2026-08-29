@@ -2,6 +2,9 @@
 
 package com.ssjq.english.ui.worddetail
 
+import com.ssjq.english.ui.common.glassInnerShadow
+import com.ssjq.english.ui.common.glassShadow
+
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedContent
@@ -18,6 +21,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,16 +35,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,8 +60,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -65,14 +78,18 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextDecoration
@@ -83,10 +100,22 @@ import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.WordEntry
+import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.ShimmerBox
+import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLEncoder
+
+data class WordSearchResult(val dbName: String, val word: WordDetail)
 
 @Composable
 fun WordDetailScreen(
@@ -95,6 +124,7 @@ fun WordDetailScreen(
     onBack: () -> Unit,
     wordQueue: List<String>? = null,
     startIndex: Int = 0,
+    onNavigateToWord: (dbName: String, wordId: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     var detail by remember { mutableStateOf<WordDetail?>(null) }
@@ -103,14 +133,28 @@ fun WordDetailScreen(
 
     // 背诵会话模式：wordQueue 非空时，按队列顺序遍历单词
     val isStudyMode = wordQueue != null
-    var currentIndex by remember(wordQueue) {
+    // 非背诵模式（从列表进入详情）时，加载整本词库作为滑动队列，同样支持左右滑动浏览
+    var browseQueue by remember(dbName) { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(dbName) {
+        if (wordQueue == null) {
+            browseQueue = withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                DatabaseManager.getWordList(db).map { it.wordId }
+            }
+        }
+    }
+    // 实际用于滑动的队列：背诵模式用传入的队列，否则用整本词库
+    val queue = wordQueue ?: browseQueue
+    val canSwipe = queue != null && queue.size > 1
+    val lastIndex = (queue?.size?.minus(1))?.coerceAtLeast(0) ?: 0
+    var currentIndex by remember(queue) {
         mutableStateOf(
-            if (isStudyMode) startIndex.coerceIn(0, (wordQueue!!.size - 1).coerceAtLeast(0))
-            else wordQueue?.indexOf(wordId)?.coerceAtLeast(0) ?: 0
+            if (isStudyMode) startIndex.coerceIn(0, lastIndex)
+            else (queue?.indexOf(wordId)?.takeIf { it >= 0 } ?: 0).coerceIn(0, lastIndex)
         )
     }
-    val currentWordId = wordQueue?.getOrNull(currentIndex) ?: wordId
-    val total = wordQueue?.size ?: 1
+    val currentWordId = queue?.getOrNull(currentIndex) ?: wordId
+    val total = queue?.size ?: 1
     // 进入背诵模式时立即把当前进度持久化（下一次继续从这里）
     LaunchedEffect(currentIndex, isStudyMode) {
         if (isStudyMode) UserLibrary.saveStudyIndex(dbName, currentIndex)
@@ -131,6 +175,61 @@ fun WordDetailScreen(
     }
     var isWrong by remember(currentWordId) {
         mutableStateOf(UserLibrary.isWrong(dbName, currentWordId))
+    }
+    // 液态玻璃背景采样源
+    val liquidBackdrop = rememberLayerBackdrop()
+
+    // 搜索弹窗
+    var showWordSearch by remember { mutableStateOf(false) }
+    var searchKeyword by remember { mutableStateOf("") }
+    var searchResult by remember { mutableStateOf<WordSearchResult?>(null) }
+    var searchLoading by remember { mutableStateOf(false) }
+
+    // 手势交互状态
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    var showExamplePanel by remember { mutableStateOf(false) }
+    var showSpellPanel by remember { mutableStateOf(false) }
+    var spellInput by remember { mutableStateOf("") }
+    var spellResult by remember { mutableStateOf<Boolean?>(null) }
+
+    // 获取所有词库列表
+    var allDbs by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        allDbs = withContext(Dispatchers.IO) { DatabaseManager.listAssetDatabases(context) }
+    }
+
+    // 搜索单词：先在当前词库搜索，再在所有词库搜索
+    suspend fun searchWord(word: String): WordSearchResult? {
+        // 先在当前词库搜索
+        val currentResult = withContext(Dispatchers.IO) {
+            val db = DatabaseManager.openDatabase(context, dbName)
+            DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+        }
+        if (currentResult != null) return WordSearchResult(dbName, currentResult)
+        // 在所有词库中搜索
+        for (otherDb in allDbs) {
+            val otherDbName = otherDb.removeSuffix(".db")
+            if (otherDbName == dbName) continue
+            val result = withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, otherDbName)
+                DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+            }
+            if (result != null) return WordSearchResult(otherDbName, result)
+        }
+        return null
+    }
+
+    fun handleWordClick(word: String) {
+        searchKeyword = word
+        searchLoading = true
+        showWordSearch = true
+    }
+
+    LaunchedEffect(showWordSearch, searchKeyword) {
+        if (showWordSearch && searchKeyword.isNotEmpty()) {
+            searchResult = searchWord(searchKeyword)
+            searchLoading = false
+        }
     }
 
     fun toggleFavorite() {
@@ -212,7 +311,46 @@ fun WordDetailScreen(
         loading = false
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 背景层：渐变 + 彩色光斑
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .layerBackdrop(liquidBackdrop),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer,
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                MaterialTheme.colorScheme.surface,
+                            ),
+                        ),
+                    ),
+            )
+            Box(
+                Modifier
+                    .size(200.dp)
+                    .offset(x = (-50).dp, y = 80.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+            )
+            Box(
+                Modifier
+                    .size(160.dp)
+                    .align(Alignment.TopEnd)
+                    .offset(x = 40.dp, y = 300.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
+            )
+        }
+
     Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -235,11 +373,11 @@ fun WordDetailScreen(
                 },
                 actions = {
                     IconButton(onClick = { toggleFavorite() }) {
-                        Image(
-                            painter = painterResource(R.drawable.diamond),
+                        Icon(
+                            imageVector = Icons.Filled.Star,
                             contentDescription = if (isFavorite) "取消收藏" else "收藏",
-                            contentScale = ContentScale.Fit,
-                            alpha = if (isFavorite) 1f else 0.4f,
+                            tint = if (isFavorite) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(26.dp),
                         )
                     }
@@ -247,14 +385,69 @@ fun WordDetailScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        val backgroundBrush = Brush.verticalGradient(
+            colors = listOf(
+                MaterialTheme.colorScheme.background,
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.06f),
+                MaterialTheme.colorScheme.background,
+            )
+        )
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .background(backgroundBrush)
+        ) {
             if (loading) {
                 // 骨架屏：模拟 Hero 区 + 释义区布局，比转圈更有"内容正在浮现"感
                 DetailSkeleton()
             } else if (detail != null) {
                 val word = detail!!
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    modifier = Modifier.fillMaxSize().padding(16.dp)
+                        .pointerInput(canSwipe) {
+                            if (!canSwipe) return@pointerInput
+                            detectDragGestures(
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragOffset = Offset(
+                                        x = (dragOffset.x + amount.x).coerceIn(-360f, 360f),
+                                        // 允许负向位移，上滑才能触发例句面板
+                                        y = (dragOffset.y + amount.y).coerceIn(-360f, 360f),
+                                    )
+                                },
+                                onDragEnd = {
+                                    val dx = dragOffset.x
+                                    val dy = dragOffset.y
+                                    when {
+                                        // 左右滑动：切换到上一个 / 下一个单词
+                                        dx < -140 -> {
+                                            if (currentIndex < total - 1) {
+                                                currentIndex++
+                                                revealed = false
+                                            } else if (isStudyMode) {
+                                                // 背诵模式滑到最后一个，结束本次背诵
+                                                onBack()
+                                            }
+                                        }
+                                        dx > 140 -> {
+                                            if (currentIndex > 0) {
+                                                currentIndex--
+                                                revealed = false
+                                            }
+                                        }
+                                        // 上下滑动：辅助面板（需先翻面看释义）
+                                        dy < -160 && revealed -> showExamplePanel = true
+                                        dy > 160 && revealed -> {
+                                            showSpellPanel = true
+                                            spellInput = ""
+                                            spellResult = null
+                                        }
+                                    }
+                                    dragOffset = Offset.Zero
+                                },
+                            )
+                        },
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     // 学习卡片：三层视觉层次 + 3D 翻转动画
@@ -265,15 +458,22 @@ fun WordDetailScreen(
                     )
                     Card(
                         modifier = Modifier.fillMaxWidth().weight(1f)
+                            .offset { IntOffset(dragOffset.x.toInt(), dragOffset.y.toInt()) }
                             .graphicsLayer {
                                 rotationY = flipRotation
+                                rotationZ = dragOffset.x * 0.03f
                                 cameraDistance = 12 * density
+                                alpha = 0.96f
                             },
-                        shape = RoundedCornerShape(24.dp),
+                        shape = RoundedCornerShape(28.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f)
                         ),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                        ),
                         onClick = { revealed = !revealed },
                     ) {
                         AnimatedContent(
@@ -286,71 +486,66 @@ fun WordDetailScreen(
                             },
                         ) { show ->
                             if (!show) {
-                                // 正面：第一层单词(超大字号) + 第二层音标 + 发音 + 引导
+                                // 正面：克制排版，字号层级清楚
                                 Column(
-                                    modifier = Modifier.fillMaxSize().padding(24.dp),
+                                    modifier = Modifier.fillMaxSize().padding(28.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center,
                                 ) {
                                     Text(
                                         word.headWord,
-                                        style = MaterialTheme.typography.displayMedium,
+                                        style = MaterialTheme.typography.displayLarge,
                                         fontWeight = FontWeight.ExtraBold,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         textAlign = TextAlign.Center,
                                     )
-                                    Spacer(Modifier.height(12.dp))
-                                    // 音标：英音 / uk_phone，美音 / us_phone
+                                    Spacer(Modifier.height(16.dp))
+                                    // 音标：小一号、克制
                                     Row(
-                                        horizontalArrangement = Arrangement.spacedBy(24.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(20.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         word.ukPhone?.takeIf { it.isNotBlank() }?.let {
-                                            Text("英 /$it/", style = MaterialTheme.typography.titleMedium,
+                                            Text("英 /$it/", style = MaterialTheme.typography.bodyLarge,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         word.usPhone?.takeIf { it.isNotBlank() }?.let {
-                                            Text("美 /$it/", style = MaterialTheme.typography.titleMedium,
+                                            Text("美 /$it/", style = MaterialTheme.typography.bodyLarge,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
-                                    Spacer(Modifier.height(16.dp))
-                                    // 难度星级
-                                    if (word.star > 0) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                            verticalAlignment = Alignment.CenterVertically) {
-                                            repeat(word.star) {
-                                                Icon(Icons.Filled.Star, null,
-                                                    tint = MaterialTheme.colorScheme.primary,
-                                                    modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.height(20.dp))
+                                    // 考频星级 + 发音，合并为一行，更紧凑
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (word.star > 0) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                verticalAlignment = Alignment.CenterVertically) {
+                                                repeat(word.star.coerceAtMost(5)) {
+                                                    Icon(Icons.Filled.Star, null,
+                                                        tint = MaterialTheme.colorScheme.tertiary,
+                                                        modifier = Modifier.size(14.dp))
+                                                }
                                             }
-                                            Text("难度", style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
-                                        Spacer(Modifier.height(12.dp))
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            CompactPronounceButton(label = "英", onClick = { speak(word.headWord, 1) })
+                                            CompactPronounceButton(label = "美", onClick = { speak(word.headWord, 2) })
+                                        }
                                     }
-                                    // 发音按钮：圆形 IconButton + 主色背景 + 按压动画
-                                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                                        PronounceButton(
-                                            label = "英音",
-                                            onClick = { speak(word.headWord, 1) },
-                                        )
-                                        PronounceButton(
-                                            label = "美音",
-                                            onClick = { speak(word.headWord, 2) },
-                                        )
-                                    }
-                                    Spacer(Modifier.height(24.dp))
+                                    Spacer(Modifier.height(32.dp))
                                     // 呼吸式引导提示
                                     val breath = rememberInfiniteTransition(label = "breath")
                                     val breathAlpha by breath.animateFloat(
-                                        initialValue = 0.4f,
-                                        targetValue = 1f,
-                                        animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
+                                        initialValue = 0.35f,
+                                        targetValue = 0.85f,
+                                        animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse),
                                         label = "a",
                                     )
                                     Text(
-                                        "轻触卡片查看释义",
+                                        "轻触查看释义",
                                         modifier = Modifier.alpha(breathAlpha),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -377,75 +572,38 @@ fun WordDetailScreen(
                                         }
                                     }
                                     Spacer(Modifier.height(12.dp))
-                                    // 释义
-                                    word.trans.forEach { t ->
+                                    // 释义：第一条加粗（考义），其余正常
+                                    word.trans.forEachIndexed { idx, t ->
                                         Text(
                                             listOfNotNull(t.pos, t.tranCn).joinToString("  "),
-                                            style = MaterialTheme.typography.bodyLarge,
+                                            style = if (idx == 0) MaterialTheme.typography.titleMedium
+                                                else MaterialTheme.typography.bodyLarge,
+                                            fontWeight = if (idx == 0) FontWeight.SemiBold else FontWeight.Normal,
                                             color = MaterialTheme.colorScheme.onSurface,
                                         )
                                     }
-                                    // 短语
+                                    // 短语：液态玻璃小卡片
                                     if (word.phrases.isNotEmpty()) {
                                         SectionHeader("短语")
                                         word.phrases.forEach {
-                                            Spacer(Modifier.height(4.dp))
-                                            Text("• ${it.content ?: ""}",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onSurface)
-                                            Text(it.cn ?: "",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Spacer(Modifier.height(8.dp))
+                                            GlassMiniCard(backdrop = liquidBackdrop) {
+                                                ClickableWordText(it.content ?: "", onWordClick = { handleWordClick(it) })
+                                                Text(it.cn ?: "",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
                                         }
                                     }
-                                    // 例句：左侧主色竖线引用样式 + 关键词高亮
+                                    // 例句：液态玻璃小卡片
                                     if (word.sentences.isNotEmpty()) {
                                         SectionHeader("例句")
-                                        val primaryColor = MaterialTheme.colorScheme.primary
-                                        val quoteBgColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                                         word.sentences.forEach { s ->
-                                            Spacer(Modifier.height(6.dp))
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 12.dp)
-                                                    .drawBehind {
-                                                        drawLine(
-                                                            color = primaryColor,
-                                                            strokeWidth = 4.dp.toPx(),
-                                                            start = Offset(0f, 0f),
-                                                            end = Offset(0f, size.height),
-                                                        )
-                                                    }
-                                                    .background(quoteBgColor)
-                                                    .padding(12.dp),
-                                            ) {
+                                            Spacer(Modifier.height(8.dp))
+                                            GlassMiniCard(backdrop = liquidBackdrop) {
                                                 val enText = s.content ?: ""
                                                 val cnText = s.cn ?: ""
-                                                // 关键词高亮：当前单词在例句中加粗+主色+下划线
-                                                val highlighted = buildAnnotatedString {
-                                                    val target = word.headWord
-                                                    val idx = enText.indexOf(target, ignoreCase = true)
-                                                    if (idx >= 0) {
-                                                        append(enText.substring(0, idx))
-                                                        withStyle(SpanStyle(
-                                                            color = primaryColor,
-                                                            fontWeight = FontWeight.Bold,
-                                                            textDecoration = TextDecoration.Underline,
-                                                        )) {
-                                                            append(enText.substring(idx, idx + target.length))
-                                                        }
-                                                        append(enText.substring(idx + target.length))
-                                                    } else {
-                                                        append(enText)
-                                                    }
-                                                }
-                                                Text(
-                                                    highlighted,
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    fontStyle = FontStyle.Italic,
-                                                    color = MaterialTheme.colorScheme.onSurface,
-                                                )
+                                                ClickableWordText(enText, onWordClick = { handleWordClick(it) })
                                                 if (cnText.isNotBlank()) {
                                                     Spacer(Modifier.height(4.dp))
                                                     Text(cnText,
@@ -500,18 +658,15 @@ fun WordDetailScreen(
                     // 背诵模式：未翻面时点击翻面；已翻面后点击进入下一个单词（或完成）
                     val onGrade: (grade: Int) -> Unit = { grade ->
                         // grade: 0=不认识, 1=模糊, 2=认识
+                        // 第一次点击（卡片尚未翻面）：先翻面看释义，不要立刻跳到下一个单词；
+                        // 已翻面后再点击评分才会记录并进入下一个单词。
                         if (!revealed) {
                             revealed = true
-                            // 翻面时即记录「不认识」到错题本
-                            if (grade == 0) markWrong()
-                            // 翻面 = 学过一个单词，自动打卡 +1 词
                             CheckInManager.accumulate(addWordsLearned = 1)
                         } else {
-                            // 已翻面后再次点击：背诵模式进下一个，单词模式仅记录
                             if (grade == 0) markWrong()
                             if (grade == 2) {
                                 markKnown()
-                                // 标记认识 = 掌握一个单词
                                 CheckInManager.accumulate(addWordsMastered = 1)
                             }
                             if (isStudyMode) {
@@ -569,6 +724,236 @@ fun WordDetailScreen(
                 }
             }
         }
+    }
+
+    if (showWordSearch) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = {
+                showWordSearch = false
+                searchResult = null
+                searchKeyword = ""
+            },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "搜索 \"$searchKeyword\"",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = {
+                            showWordSearch = false
+                            searchResult = null
+                            searchKeyword = ""
+                        }) {
+                            Icon(Icons.Filled.Close, "关闭")
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+
+                    if (searchLoading) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.align(Alignment.Center),
+                            )
+                        }
+                    } else if (searchResult != null) {
+                        val result = searchResult!!
+                        val word = result.word
+                        Column {
+                            Text(
+                                word.headWord,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            word.trans.firstOrNull()?.let {
+                                Text(
+                                    listOfNotNull(it.pos, it.tranCn).joinToString("  "),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                word.ukPhone?.let {
+                                    androidx.compose.material3.FilledTonalButton(
+                                        onClick = { speak(word.headWord, 1) },
+                                    ) {
+                                        Text("英音")
+                                    }
+                                }
+                                word.usPhone?.let {
+                                    androidx.compose.material3.FilledTonalButton(
+                                        onClick = { speak(word.headWord, 2) },
+                                    ) {
+                                        Text("美音")
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(16.dp))
+                            Button(
+                                onClick = {
+                                    showWordSearch = false
+                                    if (result.dbName == dbName && wordQueue != null) {
+                                        val idx = wordQueue.indexOf(word.wordId)
+                                        if (idx >= 0) currentIndex = idx
+                                    } else {
+                                        onNavigateToWord(result.dbName, word.wordId)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("查看单词卡片")
+                            }
+                        }
+                    } else {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(
+                                Icons.Filled.SearchOff,
+                                null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "未找到单词 \"$searchKeyword\"",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 例句面板：上滑触发
+    if (showExamplePanel && detail != null) {
+        val word = detail!!
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showExamplePanel = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "${word.headWord} 的例句",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { showExamplePanel = false }) {
+                            Icon(Icons.Filled.Close, "关闭")
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    word.sentences.forEach { s ->
+                        Spacer(Modifier.height(8.dp))
+                        GlassMiniCard(backdrop = liquidBackdrop) {
+                            ClickableWordText(s.content ?: "", onWordClick = { handleWordClick(it) })
+                            if (!s.cn.isNullOrBlank()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(s.cn, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 拼写面板：下滑触发
+    if (showSpellPanel && detail != null) {
+        val word = detail!!
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showSpellPanel = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "拼写 ${word.headWord}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { showSpellPanel = false }) {
+                            Icon(Icons.Filled.Close, "关闭")
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        word.trans.firstOrNull()?.tranCn ?: "请根据释义拼写单词",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = spellInput,
+                        onValueChange = { spellInput = it; spellResult = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("输入单词") },
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                        ),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            spellResult = spellInput.trim().equals(word.headWord, ignoreCase = true)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("提交")
+                    }
+                    if (spellResult != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            if (spellResult == true) "✓ 正确" else "✗ 正确答案是 ${word.headWord}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (spellResult == true) MaterialTheme.colorScheme.tertiary
+                            else MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
+    }
     }
 }
 
@@ -686,6 +1071,7 @@ private fun DetailSkeleton() {
 @Composable
 fun WordStudyScreen(
     dbName: String,
+    startWordId: String? = null,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -705,9 +1091,13 @@ fun WordStudyScreen(
     when {
         wordIds != null -> {
             val ids = wordIds!!
-            // 读取上次进度：越界则回到 0（已背完或词库变化）
-            var startIdx = UserLibrary.studyIndex(dbName)
-            if (startIdx >= ids.size) startIdx = 0
+            // 若指定了起始单词，则从该单词开始；否则读取上次进度（越界则回到 0）
+            var startIdx = if (startWordId != null) {
+                ids.indexOf(startWordId).takeIf { it >= 0 } ?: UserLibrary.studyIndex(dbName)
+            } else {
+                val saved = UserLibrary.studyIndex(dbName)
+                if (saved >= ids.size) 0 else saved
+            }
             WordDetailScreen(
                 dbName = dbName,
                 wordId = ids[startIdx],
@@ -725,4 +1115,117 @@ fun WordStudyScreen(
         }
         else -> DetailSkeleton()
     }
+}
+
+/**
+ * 液态玻璃小卡片：用于短语、例句等辅助信息。
+ */
+@Composable
+private fun GlassMiniCard(
+    backdrop: Backdrop,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    LiquidGlassCard(
+        backdrop = backdrop,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        blurRadius = 8.dp,
+        lensHeight = 8.dp,
+        lensAmount = 14.dp,
+        surfaceColor = Color.White.copy(alpha = 0.18f),
+        shadow = glassShadow(12.dp, 0.12f),
+        highlight = Highlight.Default.copy(alpha = 0.5f),
+        innerShadow = glassInnerShadow(4.dp, 0.08f),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            content = content,
+        )
+    }
+}
+
+/**
+ * 紧凑发音按钮：正面使用，不抢单词风头。
+ */
+@Composable
+private fun CompactPronounceButton(label: String, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = tween(120),
+        label = "compactPronounceScale",
+    )
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))
+            .clickable(interactionSource = interaction, indication = null) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/**
+ * 将文本中的英文单词转换为可点击的链接
+ */
+@Composable
+private fun ClickableWordText(
+    text: String,
+    onWordClick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val wordPattern = Regex("[a-zA-Z]+")
+    val matches = wordPattern.findAll(text).toList()
+    
+    if (matches.isEmpty()) {
+        Text(text, style = MaterialTheme.typography.bodyMedium, modifier = modifier)
+        return
+    }
+
+    val annotatedString = buildAnnotatedString {
+        var lastIndex = 0
+        for (match in matches) {
+            if (match.range.start > lastIndex) {
+                append(text.substring(lastIndex, match.range.start))
+            }
+            val word = match.value
+            addStringAnnotation(
+                tag = "WORD",
+                annotation = word,
+                start = length,
+                end = length + word.length,
+            )
+            append(word)
+            lastIndex = match.range.endInclusive + 1
+        }
+        if (lastIndex < text.length) {
+            append(text.substring(lastIndex))
+        }
+    }
+
+    val textLayoutResult = remember { mutableStateOf<TextLayoutResult?>(null) }
+
+    androidx.compose.foundation.text.BasicText(
+        text = annotatedString,
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures { offsetPosition ->
+                val layoutResult = textLayoutResult.value ?: return@detectTapGestures
+                val offset = layoutResult.getOffsetForPosition(offsetPosition)
+                annotatedString.getStringAnnotations("WORD", offset, offset).firstOrNull()?.let {
+                    onWordClick(it.item)
+                }
+            }
+        },
+        style = MaterialTheme.typography.bodyMedium,
+        onTextLayout = { textLayoutResult.value = it },
+    )
 }

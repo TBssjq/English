@@ -4,12 +4,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- ========== 前台服务相关权限 ========== -->
-    <!-- 基础前台服务权限（Android 9+ 需声明） -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Android 14+ 必须声明具体类型，本服务用 dataSync -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- 通知权限（Android 13+ 需运行时申请） -->
+    <!-- 通知权限（Android 13+ 需运行时申请，用于版本更新通知） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- ========== App 更新相关权限 ========== -->
@@ -42,20 +37,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- 学习状态前台服务 -->
-        <!-- exported=false：仅 App 内部可启动，安全 -->
-        <!-- foregroundServiceType=dataSync：Android 14+ 必须声明且与权限匹配 -->
-        <service
-            android:name=".service.LearningForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-
-        <!-- 通知按钮广播接收器 -->
-        <!-- exported=false：仅 App 内部的 PendingIntent 可触发 -->
-        <receiver
-            android:name=".service.NotificationActionReceiver"
-            android:exported="false" />
 
         <!-- FileProvider：用于 7.0+ 安装 APK 时分享文件 -->
         <provider
