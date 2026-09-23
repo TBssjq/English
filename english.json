@@ -1,6 +1,6 @@
 {
   "latestVersion": "2.1",
-  "downloadUrl": "https://github.com/YOUR_USERNAME/English/releases/download/v1.0/app-release.apk",
+  "downloadUrl": "https://github.com/TBssjq/English/releases/download/v2.1/app-release.apk",
   "forceUpdate": false,
   "changelog": "1. 修复打卡数据异常、测验重复点击跳题、导入导出、旋转丢失进度等多项崩溃与逻辑缺陷\n2. 修复液态玻璃慢速滚动定格，主线程 I/O 迁移到后台线程，减少卡顿\n3. 首页顶栏紧凑化、深色模式置顶迷你条、开始学习入口首屏可见\n4. 打卡热力图跟随主题配色，修复 Toast 与更新公告的显示问题"
 }
