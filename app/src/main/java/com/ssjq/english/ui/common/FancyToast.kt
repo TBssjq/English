@@ -70,7 +70,14 @@ fun FancyToast(
                     highlight = Highlight.Default.copy(alpha = 0.7f),
                     innerShadow = glassInnerShadow(4.dp, 0.25f),
                 ) {
-                    ToastContent(message)
+                    // LiquidGlassCard 的内容作用域是 Box，直接放 Icon+Spacer+Text 会重叠，
+                    // 必须用 Row 承载（与下方纯色分支保持一致）
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ToastContent(message)
+                    }
                 }
             } else {
                 Row(

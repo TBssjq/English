@@ -4,10 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * 单日打卡记录。
@@ -61,24 +61,54 @@ object CheckInManager {
     private const val PREF_NAME = "check_in"
     private const val KEY_RECORDS = "check_in_records"
 
-    private lateinit var prefs: SharedPreferences
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+    /** 保留的最近记录天数上限：防止 SP 里的 JSON 随使用年限线性膨胀 */
+    private const val MAX_RECORDS = 400
+
+    /** 空统计：供 UI 在首次加载前展示，避免主线程解析 SP 里的 JSON 卡顿 */
+    val EmptyStats: CheckInStats = CheckInStats(
+        todayRecord = null,
+        isCheckedInToday = false,
+        currentStreak = 0,
+        longestStreak = 0,
+        totalDays = 0,
+        totalMinutes = 0,
+        totalWordsLearned = 0,
+        totalWordsMastered = 0,
+        totalQuizCorrect = 0,
+        totalQuizTotal = 0,
+    )
+
+    @Volatile
+    private var appContext: Context? = null
+
+    /**
+     * 日期键格式（yyyy-MM-dd）。
+     * 旧实现共享一个 `SimpleDateFormat` —— 它是**可变且非线程安全**的，
+     * 打卡累加常在 IO 线程被并发调用，会产生错乱日期甚至抛异常，
+     * 一旦写进脏日期键，连续天数与历史记录就永久损坏。
+     * `DateTimeFormatter` 不可变且线程安全。
+     */
+    private val dateFormat: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 
     /** 必须在 Application / Activity 启动时调用一次 */
     fun init(context: Context) {
-        if (::prefs.isInitialized) return
-        prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        if (appContext == null) appContext = context.applicationContext
     }
 
     private fun ensureInit() {
-        check(::prefs.isInitialized) { "CheckInManager 未初始化，请先调用 init(context)" }
+        if (appContext == null) error("CheckInManager 未初始化，请先调用 init(context)")
     }
 
+    private val prefs: SharedPreferences
+        get() = appContext?.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            ?: error("CheckInManager 未初始化，请先调用 init(context)")
+
     /** 今日日期键 */
-    fun todayKey(): String = dateFormat.format(Date())
+    fun todayKey(): String = LocalDate.now().format(dateFormat)
 
     /** 任意时间戳对应的日期键 */
-    fun dateKey(timestamp: Long): String = dateFormat.format(Date(timestamp))
+    fun dateKey(timestamp: Long): String =
+        Instant.ofEpochMilli(timestamp).atZone(ZoneId.systemDefault()).toLocalDate().format(dateFormat)
 
     // ---------- 读写 ----------
 
@@ -88,18 +118,26 @@ object CheckInManager {
         val raw = prefs.getString(KEY_RECORDS, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                CheckInRecord(
-                    date = o.getString("date"),
-                    studyMinutes = o.optInt("studyMinutes", 0),
-                    wordsLearned = o.optInt("wordsLearned", 0),
-                    wordsMastered = o.optInt("wordsMastered", 0),
-                    quizCorrect = o.optInt("quizCorrect", 0),
-                    quizTotal = o.optInt("quizTotal", 0),
-                    checkedAt = o.optLong("checkedAt", System.currentTimeMillis()),
-                    updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
-                )
+            // 单条记录损坏时只跳过该条，绝不能让整个数组解析失败后返回空列表，
+            // 否则 accumulate() 会基于空列表重建并写回，把用户全部历史打卡覆盖清零。
+            (0 until arr.length()).mapNotNull { i ->
+                try {
+                    val o = arr.getJSONObject(i)
+                    val date = o.optString("date", "")
+                    if (date.isBlank()) return@mapNotNull null
+                    CheckInRecord(
+                        date = date,
+                        studyMinutes = o.optInt("studyMinutes", 0),
+                        wordsLearned = o.optInt("wordsLearned", 0),
+                        wordsMastered = o.optInt("wordsMastered", 0),
+                        quizCorrect = o.optInt("quizCorrect", 0),
+                        quizTotal = o.optInt("quizTotal", 0),
+                        checkedAt = o.optLong("checkedAt", System.currentTimeMillis()),
+                        updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
+                    )
+                } catch (_: Exception) {
+                    null
+                }
             }.sortedBy { it.date }
         } catch (_: Exception) {
             emptyList()
@@ -121,6 +159,7 @@ object CheckInManager {
      * 累加今日学习数据。若今日无记录则创建（即「打卡」）。
      * 所有学习行为（翻卡片、标记认识/不认识、完成测验）都调用此方法。
      */
+    @Synchronized
     fun accumulate(
         addMinutes: Int = 0,
         addWordsLearned: Int = 0,
@@ -193,32 +232,28 @@ object CheckInManager {
     private fun calcCurrentStreak(records: List<CheckInRecord>): Int {
         if (records.isEmpty()) return 0
         val dates = records.map { it.date }.toSet()
-        val cal = Calendar.getInstance()
-        // 如果今天没打卡，从昨天开始算（保持连续性，不因今天还没学而断签）
-        if (todayKey() !in dates) {
-            cal.add(Calendar.DAY_OF_YEAR, -1)
-        }
+        var cursor = LocalDate.now()
+        // 今天还没学不算断签，从昨天开始数
+        if (todayKey() !in dates) cursor = cursor.minusDays(1)
         var streak = 0
-        while (dateFormat.format(cal.time) in dates) {
+        while (cursor.format(dateFormat) in dates) {
             streak++
-            cal.add(Calendar.DAY_OF_YEAR, -1)
+            cursor = cursor.minusDays(1)
         }
         return streak
     }
 
-    /** 历史最长连续打卡天数 */
+    /** 历史最长连续打卡天数。脏日期（解析失败）直接跳过，不参与计算 */
     private fun calcLongestStreak(records: List<CheckInRecord>): Int {
-        if (records.isEmpty()) return 0
-        val sorted = records.sortedBy { it.date }
+        val sorted = records
+            .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
+            .distinct()
+            .sorted()
+        if (sorted.isEmpty()) return 0
         var longest = 1
         var cur = 1
-        val cal = Calendar.getInstance()
         for (i in 1 until sorted.size) {
-            val prev = parseDate(sorted[i - 1].date)
-            val now = parseDate(sorted[i].date)
-            cal.time = prev
-            cal.add(Calendar.DAY_OF_YEAR, 1)
-            if (dateFormat.format(cal.time) == dateFormat.format(now)) {
+            if (sorted[i] == sorted[i - 1].plusDays(1)) {
                 cur++
                 if (cur > longest) longest = cur
             } else {
@@ -228,29 +263,23 @@ object CheckInManager {
         return longest
     }
 
-    private fun parseDate(key: String): Date = try {
-        dateFormat.parse(key) ?: Date()
-    } catch (_: Exception) {
-        Date()
-    }
-
     /** 获取最近 N 天的记录（含今天，按日期升序），缺失日期补空 */
     fun recentDays(n: Int): List<CheckInRecord?> {
-        val records = allRecords()
-        val map = records.associateBy { it.date }
-        val result = mutableListOf<CheckInRecord?>()
-        val cal = Calendar.getInstance()
-        repeat(n) {
-            val key = dateFormat.format(cal.time)
-            result.add(0, map[key])
-            cal.add(Calendar.DAY_OF_YEAR, -1)
-        }
-        return result
+        val map = allRecords().associateBy { it.date }
+        val today = LocalDate.now()
+        val count = n.coerceAtLeast(1)
+        return (0 until count)
+            .map { i -> map[today.minusDays(i.toLong()).format(dateFormat)] }
+            .reversed()
     }
 
     private fun saveList(list: List<CheckInRecord>) {
+        // 只保留最近 MAX_RECORDS 天：每天一条记录，否则 SP 里的 JSON 会随
+        // 使用年限线性膨胀，每次累加都要全量反序列化 + 整串写回，最终卡顿
+        val sorted = list.sortedBy { it.date }
+        val kept = if (sorted.size > MAX_RECORDS) sorted.takeLast(MAX_RECORDS) else sorted
         val arr = JSONArray()
-        list.forEach { r ->
+        kept.forEach { r ->
             arr.put(JSONObject().apply {
                 put("date", r.date)
                 put("studyMinutes", r.studyMinutes)

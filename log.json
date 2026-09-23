@@ -1,7 +1,16 @@
 {
-  "latest": "1.0",
-  "updated": "2026-08-29",
+  "latest": "2.1",
+  "updated": "2026-09-02",
   "entries": [
+    {
+      "version": "2.1",
+      "date": "2026-09-02",
+      "changes": [
+        "修复拉取公告时因数据解析异常导致的闪退 bug",
+        "优化 UI，首页全面接入液态玻璃库（LiquidButton / LiquidCard / LiquidToggle）",
+        "玻璃弹窗改为同窗口覆盖层，避免跨窗口采样崩溃"
+      ]
+    },
     {
       "version": "1.0",
       "date": "2026-08-29",

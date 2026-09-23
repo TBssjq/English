@@ -3,8 +3,6 @@ package com.kyant.backdrop
 import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.GraphicsLayerScope
@@ -19,10 +17,10 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
-import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ObserverModifierNode
 import androidx.compose.ui.node.observeReads
@@ -257,7 +255,11 @@ private class DrawBackdropNode(
         compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
     }
 
-    private var layoutCoordinates: LayoutCoordinates? by mutableStateOf(null, neverEqualPolicy())
+    // 普通字段即可：最新坐标由 onGloballyPositioned 写入，并在写入后
+    // 主动 invalidateDraw() 触发重绘。
+    // 若仍用 mutableStateOf，写入会尝试触发重组，而 重组 → 布局 → onGloballyPositioned
+    // 会形成同步递归（这就是为什么此前必须加 0.5px 阈值来兜底）。
+    private var layoutCoordinates: LayoutCoordinates? = null
 
     private var padding by mutableFloatStateOf(0f)
 
@@ -337,20 +339,17 @@ private class DrawBackdropNode(
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
         if (coordinates.isAttached) {
             if (backdrop.isCoordinatesDependent) {
-                // 仅在窗口位置发生"有意义"的变化时才赋值。
-                // layoutCoordinates 使用 neverEqualPolicy，无条件赋值会不断触发重组，
-                // 重组又触发布局回调，形成同步无限递归 → StackOverflowError。
-                // 0.5px 阈值用于吞掉亚像素抖动导致的"位置永远在变"。
-                val current = layoutCoordinates
-                if (current == null || positionMoved(current, coordinates)) {
-                    layoutCoordinates = coordinates
-                }
+                layoutCoordinates = coordinates
             } else {
-                if (layoutCoordinates != null) {
-                    layoutCoordinates = null
-                }
+                layoutCoordinates = null
             }
             exportedBackdrop?.layerCoordinates = coordinates
+            // 关键：坐标变化后必须主动请求重绘。
+            // 本节点 shouldAutoInvalidate=false，且不依赖 state 触发重绘，
+            // 因此慢速滚动（单帧位移小于旧 0.5px 阈值）时玻璃会定格不动。
+            // invalidateDraw() 只标记绘制失效，不触发重组/布局，
+            // 因而不会再次回调本方法，无递归风险。
+            invalidateDraw()
         }
     }
 
@@ -391,10 +390,5 @@ private class DrawBackdropNode(
         effectScope.reset()
         layoutCoordinates = null
         exportedBackdrop?.layerCoordinates = null
-    }
-
-    private fun positionMoved(old: LayoutCoordinates, new: LayoutCoordinates): Boolean {
-        val delta = old.positionInWindow() - new.positionInWindow()
-        return kotlin.math.abs(delta.x) > 0.5f || kotlin.math.abs(delta.y) > 0.5f
     }
 }

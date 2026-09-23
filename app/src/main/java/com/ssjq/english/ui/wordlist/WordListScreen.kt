@@ -75,6 +75,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -106,6 +107,7 @@ import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.common.ShimmerBox
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val GROUP_SIZE = 30
@@ -137,20 +139,27 @@ fun WordListScreen(
     var showResetDialog by remember { mutableStateOf(false) }
     var showQuizDialog by remember { mutableStateOf(false) }
     var showImportExportDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-    fun refreshCounts() {
-        wrongCount = com.ssjq.english.data.UserLibrary.wrongCount(dbName)
-        favoriteCount = com.ssjq.english.data.UserLibrary.favoriteCount(dbName)
-        studyIndex = com.ssjq.english.data.UserLibrary.studyIndex(dbName)
-        studyTotal = words.size
-        autoFav = com.ssjq.english.data.UserLibrary.autoFavoriteEnabled(dbName)
-        wrongIds = com.ssjq.english.data.UserLibrary.wrongWords(dbName).map { it.wordId }.toSet()
-        favoriteIds = com.ssjq.english.data.UserLibrary.favorites(dbName).map { it.wordId }.toSet()
+    /**
+     * 刷新各计数。会读取四次 SP 里的 JSON，必须放到 IO 线程，
+     * 否则在返回本页面（ON_RESUME）或切词库时阻塞主线程。
+     */
+    suspend fun refreshCounts() {
+        withContext(Dispatchers.IO) {
+            wrongCount = com.ssjq.english.data.UserLibrary.wrongCount(dbName)
+            favoriteCount = com.ssjq.english.data.UserLibrary.favoriteCount(dbName)
+            studyIndex = com.ssjq.english.data.UserLibrary.studyIndex(dbName)
+            studyTotal = words.size
+            autoFav = com.ssjq.english.data.UserLibrary.autoFavoriteEnabled(dbName)
+            wrongIds = com.ssjq.english.data.UserLibrary.wrongWords(dbName).map { it.wordId }.toSet()
+            favoriteIds = com.ssjq.english.data.UserLibrary.favorites(dbName).map { it.wordId }.toSet()
+        }
     }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refreshCounts()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) scope.launch { refreshCounts() }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -158,9 +167,14 @@ fun WordListScreen(
 
     LaunchedEffect(dbName) {
         loading = true
-        words = withContext(Dispatchers.IO) {
-            val db = DatabaseManager.openDatabase(context, dbName)
-            DatabaseManager.getWordList(db)
+        // openDatabase 对非法/缺失词库会抛异常，未捕获会直接从协程冒泡导致崩溃
+        words = try {
+            withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                DatabaseManager.getWordList(db)
+            }
+        } catch (_: Exception) {
+            emptyList()
         }
         loading = false
         refreshCounts()

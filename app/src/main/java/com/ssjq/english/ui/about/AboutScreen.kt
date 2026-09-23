@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -125,19 +124,26 @@ fun AboutScreen(onBack: () -> Unit) {
         scope.launch {
             checkingUpdate = true
             updateError = null
-            val (version, result) = AppUpdateManager.checkUpdate(context)
-            checkingUpdate = false
-            when (result) {
-                UpdateResult.NEW_VERSION_AVAILABLE -> {
-                    latestVersion = version
-                    showUpdateDialog = true
+            try {
+                val (version, result) = AppUpdateManager.checkUpdate(context)
+                when (result) {
+                    UpdateResult.NEW_VERSION_AVAILABLE -> {
+                        latestVersion = version
+                        showUpdateDialog = true
+                    }
+                    UpdateResult.NO_UPDATE -> {
+                        updateError = "当前已是最新版本"
+                    }
+                    UpdateResult.NETWORK_ERROR -> {
+                        updateError = "检查更新失败，请检查网络"
+                    }
                 }
-                UpdateResult.NO_UPDATE -> {
-                    updateError = "当前已是最新版本"
-                }
-                UpdateResult.NETWORK_ERROR -> {
-                    updateError = "检查更新失败，请检查网络"
-                }
+            } catch (_: Exception) {
+                updateError = "检查更新失败，请稍后重试"
+            } finally {
+                // 必须放 finally：异常时若漏掉这一步，checkingUpdate 会永远为
+                // true，「检查更新」按钮从此永久禁用，只能重启 App
+                checkingUpdate = false
             }
         }
     }
@@ -147,31 +153,32 @@ fun AboutScreen(onBack: () -> Unit) {
         scope.launch {
             loadingNotice = true
             noticeError = null
-            val (notice, result) = AppUpdateManager.fetchNotice()
-            loadingNotice = false
-            when (result) {
-                NoticeResult.HAS_NOTICE -> {
-                    if (notice != null) {
-                        latestNotice = notice
-                        showNoticeDialog = true
-                    } else {
-                        noticeError = "暂无公告"
+            try {
+                val (notice, result) = AppUpdateManager.fetchNotice()
+                when (result) {
+                    NoticeResult.HAS_NOTICE -> {
+                        // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
+                        if (notice != null && notice.hasContent()) {
+                            latestNotice = notice
+                            showNoticeDialog = true
+                        } else {
+                            noticeError = "暂无公告"
+                        }
                     }
+                    NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
+                    NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
                 }
-                NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
-                NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
+            } catch (_: Exception) {
+                noticeError = "拉取公告失败，请稍后重试"
+            } finally {
+                // 同上：异常时也必须复位，否则按钮永久转圈
+                loadingNotice = false
             }
         }
     }
 
     fun openNoticeUrl(url: String) {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(intent)
-        } catch (_: Exception) {
-        }
+        AppUpdateManager.openUrl(context, url)
     }
 
     fun openEditUsername() {
@@ -576,80 +583,89 @@ fun AboutScreen(onBack: () -> Unit) {
     }
     } // end of Box (liquid glass background)
 
-    // 更新弹窗
+    // 更新弹窗（液态玻璃）
     if (showUpdateDialog && latestVersion != null) {
         val v = latestVersion!!
-        AlertDialog(
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
             onDismissRequest = {
                 if (!v.forceUpdate) showUpdateDialog = false
             },
-            title = {
-                Text(
-                    "发现新版本 v${v.latestVersion}",
-                    fontWeight = FontWeight.Bold,
-                )
-            },
-            text = {
-                Text(
-                    v.changelog.ifBlank { "新版本已发布，立即体验！" },
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { handleUpdateClick() }) {
-                    Text("立即更新")
-                }
-            },
-            dismissButton = {
+        ) {
+            Text(
+                "发现新版本 v${v.latestVersion}",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                v.changelog.ifBlank { "新版本已发布，立即体验！" },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
                 if (!v.forceUpdate) {
                     TextButton(onClick = { showUpdateDialog = false }) {
                         Text("稍后再说")
                     }
+                    Spacer(Modifier.width(8.dp))
                 }
-            },
-        )
+                TextButton(onClick = { handleUpdateClick() }) {
+                    Text("立即更新")
+                }
+            }
+        }
     }
 
-    // 修改用户名弹窗
+    // 修改用户名弹窗（液态玻璃）
     if (showUsernameDialog) {
-        AlertDialog(
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
             onDismissRequest = { showUsernameDialog = false },
-            title = {
-                Text("修改用户名", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = newUsername,
-                        onValueChange = {
-                            newUsername = it
-                            usernameError = ""
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("输入新用户名") },
-                        textStyle = MaterialTheme.typography.titleMedium,
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                        colors = TextFieldDefaults.colors(
-                            focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                            unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
-                        ),
-                        singleLine = true,
-                        isError = usernameError.isNotBlank(),
-                        supportingText = if (usernameError.isNotBlank()) { { Text(usernameError, color = MaterialTheme.colorScheme.error) } } else null,
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { saveUsername() }) {
-                    Text("保存")
-                }
-            },
-            dismissButton = {
+        ) {
+            Text(
+                "修改用户名",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = newUsername,
+                onValueChange = {
+                    newUsername = it
+                    usernameError = ""
+                },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("输入新用户名") },
+                textStyle = MaterialTheme.typography.titleMedium,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                    unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
+                ),
+                singleLine = true,
+                isError = usernameError.isNotBlank(),
+                supportingText = if (usernameError.isNotBlank()) {
+                    { Text(usernameError, color = MaterialTheme.colorScheme.error) }
+                } else null,
+            )
+            Spacer(Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
                 TextButton(onClick = { showUsernameDialog = false }) {
                     Text("取消")
                 }
-            },
-        )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { saveUsername() }) {
+                    Text("保存")
+                }
+            }
+        }
     }
 
     // 最新公告：液态玻璃对话框（与版本号无关，可直接拉取）

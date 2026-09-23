@@ -66,6 +66,7 @@ fun RegisterScreen(onRegisterComplete: () -> Unit) {
     var selectedBook by remember { mutableStateOf<String?>(null) }
     var allDbs by remember { mutableStateOf<List<String>>(emptyList()) }
     var query by remember { mutableStateOf("") }
+    var bookError by remember { mutableStateOf("") }
     val liquidBackdrop = rememberLayerBackdrop()
 
     LaunchedEffect(Unit) {
@@ -142,7 +143,11 @@ fun RegisterScreen(onRegisterComplete: () -> Unit) {
                 query = query,
                 onQueryChange = { query = it },
                 selectedBook = selectedBook,
-                onSelect = { selectedBook = it },
+                bookError = bookError,
+                onSelect = {
+                    selectedBook = it
+                    bookError = ""   // 选中后清除错误提示
+                },
                 onConfirm = {
                     val book = selectedBook
                     if (book != null) {
@@ -151,6 +156,10 @@ fun RegisterScreen(onRegisterComplete: () -> Unit) {
                         UserManager.setLastStudyDb(book)
                         UserManager.markLaunched()
                         onRegisterComplete()
+                    } else {
+                        // 旧实现：未选词库时点击「开始学习」静默无反应，
+                        // 用户无法进入主界面且毫无提示
+                        bookError = "请先选择一个词库"
                     }
                 },
                 onBack = { step = 0 },
@@ -224,6 +233,7 @@ private fun PickBookStep(
     query: String,
     onQueryChange: (String) -> Unit,
     selectedBook: String?,
+    bookError: String,
     onSelect: (String) -> Unit,
     onConfirm: () -> Unit,
     onBack: () -> Unit,
@@ -246,6 +256,15 @@ private fun PickBookStep(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
+
+        if (bookError.isNotBlank()) {
+            Text(
+                bookError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         LiquidGlassSearchBar(backdrop = backdrop, modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(

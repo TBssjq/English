@@ -30,13 +30,23 @@ object UserLibrary {
     private const val KEY_AUTO_FAV = "auto_favorite_"     // +dbName
     private const val KEY_CATEGORY_ORDER = "category_order" // 主页分类自定义顺序
 
-    private lateinit var prefs: SharedPreferences
+    @Volatile
+    private var appContext: Context? = null
 
     /** 必须在 Application / Activity 启动时调用一次 */
     fun init(context: Context) {
-        if (::prefs.isInitialized) return
-        prefs = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        if (appContext == null) appContext = context.applicationContext
     }
+
+    /**
+     * 读取 SharedPreferences。
+     * 早期用 `lateinit var prefs`，在 init 之前调用任一方法都会
+     * 抛 UninitializedPropertyAccessException 直接崩溃；改为惰性取值，
+     * 未初始化时给出明确错误信息，且不会因调用时序问题炸掉整个 App。
+     */
+    private val prefs: SharedPreferences
+        get() = appContext?.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            ?: error("UserLibrary 未初始化，请先调用 init(context)")
 
     // ---------- 背诵进度 ----------
 
@@ -93,17 +103,21 @@ object UserLibrary {
 
     // ---------- 错题本 ----------
 
+    /** 写操作统一加锁：读-改-写不是原子操作，并发调用会丢更新 */
+    @Synchronized
     fun addWrong(entry: WordEntry) {
-        val list = readList(KEY_WRONG).toMutableList()
+        // 数据损坏时中止写入，避免把用户积累的错题清零
+        val list = readListSafe(KEY_WRONG)?.toMutableList() ?: return
         if (list.none { it.wordId == entry.wordId && it.dbName == entry.dbName }) {
             list.add(entry)
             writeList(KEY_WRONG, list)
         }
     }
 
+    @Synchronized
     fun removeWrong(dbName: String, wordId: String) {
-        val list = readList(KEY_WRONG).filterNot { it.wordId == wordId && it.dbName == dbName }
-        writeList(KEY_WRONG, list)
+        val list = readListSafe(KEY_WRONG) ?: return
+        writeList(KEY_WRONG, list.filterNot { it.wordId == wordId && it.dbName == dbName })
     }
 
     fun isWrong(dbName: String, wordId: String): Boolean =
@@ -116,17 +130,20 @@ object UserLibrary {
 
     // ---------- 收藏夹 ----------
 
+    @Synchronized
     fun addFavorite(entry: WordEntry) {
-        val list = readList(KEY_FAVORITE).toMutableList()
+        // 数据损坏时中止写入，避免把用户积累的收藏清零
+        val list = readListSafe(KEY_FAVORITE)?.toMutableList() ?: return
         if (list.none { it.wordId == entry.wordId && it.dbName == entry.dbName }) {
             list.add(entry)
             writeList(KEY_FAVORITE, list)
         }
     }
 
+    @Synchronized
     fun removeFavorite(dbName: String, wordId: String) {
-        val list = readList(KEY_FAVORITE).filterNot { it.wordId == wordId && it.dbName == dbName }
-        writeList(KEY_FAVORITE, list)
+        val list = readListSafe(KEY_FAVORITE) ?: return
+        writeList(KEY_FAVORITE, list.filterNot { it.wordId == wordId && it.dbName == dbName })
     }
 
     fun isFavorite(dbName: String, wordId: String): Boolean =
@@ -137,26 +154,99 @@ object UserLibrary {
 
     fun favoriteCount(dbName: String): Int = favorites(dbName).size
 
+    // ---------- 批量读取（性能） ----------
+
+    /**
+     * 一次性读取全部错题。
+     *
+     * 提供批量接口是为了避免调用方按词库循环读取 —— 那会对同一份 JSON
+     * 反复反序列化（N 个词库 = N 次全量解析），几十个词库时主线程明显卡顿。
+     */
+    fun allWrongWords(): List<WordEntry> = readList(KEY_WRONG)
+
+    /** 一次性读取全部收藏 */
+    fun allFavorites(): List<WordEntry> = readList(KEY_FAVORITE)
+
+    /** 各词库的错题数（只解析一次 JSON 得出全部结果） */
+    fun wrongCountByDb(): Map<String, Int> =
+        readList(KEY_WRONG).groupingBy { it.dbName }.eachCount()
+
+    /** 各词库的收藏数（只解析一次 JSON 得出全部结果） */
+    fun favoriteCountByDb(): Map<String, Int> =
+        readList(KEY_FAVORITE).groupingBy { it.dbName }.eachCount()
+
     // ---------- 持久化 ----------
 
-    internal fun readList(key: String): List<WordEntry> {
-        val raw = prefs.getString(key, null) ?: return emptyList()
+    /**
+     * 解析词单。
+     *
+     * 旧实现在解析异常时返回 `emptyList()`，而调用它的 addWrong / removeWrong
+     * 紧接着就会把「空列表」写回去 —— 只要有一条记录损坏或 JSON 结构异常，
+     * 用户积累的全部错题/收藏就被静默清零，且不可恢复。
+     *
+     * 现在：
+     * - 单条记录损坏只跳过该条，不影响其余数据；
+     * - 整体解析失败返回 **null**，写操作遇到 null 一律中止，宁可不写也不能清空。
+     */
+    private fun readListSafe(key: String): List<WordEntry>? {
+        cachedList(key)?.let { return it }
+        val raw = prefs.getString(key, null)
+        if (raw == null) {
+            setCachedList(key, emptyList())
+            return emptyList()
+        }
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                WordEntry(
-                    wordId = o.getString("wordId"),
-                    headWord = o.getString("headWord"),
-                    dbName = o.getString("dbName"),
-                    tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
-                    addedAt = o.optLong("addedAt", System.currentTimeMillis()),
+            val list = ArrayList<WordEntry>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val wordId = o.optString("wordId", "")
+                val dbName = o.optString("dbName", "")
+                // 缺主键的脏数据直接跳过
+                if (wordId.isBlank() || dbName.isBlank()) continue
+                list.add(
+                    WordEntry(
+                        wordId = wordId,
+                        headWord = o.optString("headWord", wordId),
+                        dbName = dbName,
+                        tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
+                        addedAt = o.optLong("addedAt", System.currentTimeMillis()),
+                    )
                 )
             }
+            list.also { setCachedList(key, it) }
         } catch (_: Exception) {
-            emptyList()
+            null
         }
     }
+
+    /**
+     * wrong / favorite 两个 key 的解析结果缓存。
+     * 这两个 key 的所有写入都经过 [writeList]，缓存可在写入时同步更新，
+     * 从而避免 isWrong/isFavorite/wrongCount 等每次调用都全量解析 JSON。
+     * 解析失败（null）不缓存，以便下次重试。
+     */
+    @Volatile
+    private var wrongCache: List<WordEntry>? = null
+
+    @Volatile
+    private var favCache: List<WordEntry>? = null
+
+    private fun cachedList(key: String): List<WordEntry>? = when (key) {
+        KEY_WRONG -> wrongCache
+        KEY_FAVORITE -> favCache
+        else -> null
+    }
+
+    private fun setCachedList(key: String, list: List<WordEntry>) {
+        when (key) {
+            KEY_WRONG -> wrongCache = list
+            KEY_FAVORITE -> favCache = list
+        }
+    }
+
+    /** 只读场景使用的解析（失败降级为空列表）；写操作请用 [readListSafe] */
+    internal fun readList(key: String): List<WordEntry> = readListSafe(key) ?: emptyList()
 
     internal fun writeList(key: String, list: List<WordEntry>) {
         val arr = JSONArray()
@@ -170,5 +260,6 @@ object UserLibrary {
             })
         }
         prefs.edit().putString(key, arr.toString()).apply()
+        setCachedList(key, list)
     }
 }

@@ -38,9 +38,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +70,9 @@ import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.nav.LibraryType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 用户词单页：错题本 / 收藏夹共用。
@@ -84,10 +89,20 @@ fun LibraryScreen(
         LibraryType.WRONG -> "错题本"
         LibraryType.FAVORITE -> "收藏夹"
     }
-    // 用 mutableStateOf 触发重组；删除时刷新
-    var entries by remember { mutableStateOf(loadEntries(dbName, type)) }
+    // 用 mutableStateOf 触发重组；删除时刷新。
+    // key 必须带上 dbName/type：旧实现无 key，切换词库或切换类型时不会重新
+    // 加载，界面上显示的仍是上一份数据
+    // 先给空列表，避免组合期同步解析错题/收藏 JSON 阻塞主线程
+    var entries by remember(dbName, type) { mutableStateOf<List<WordEntry>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
-    fun refresh() { entries = loadEntries(dbName, type) }
+    suspend fun reloadEntries() {
+        val data = withContext(Dispatchers.IO) { loadEntries(dbName, type) }
+        entries = data
+    }
+    LaunchedEffect(dbName, type) { reloadEntries() }
+
+    fun refresh() { scope.launch { reloadEntries() } }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     // 液态玻璃背景采样源
@@ -169,11 +184,15 @@ fun LibraryScreen(
                         backdrop = liquidBackdrop,
                         onClick = { onWordClick(entry.wordId) },
                         onDelete = {
-                            when (type) {
-                                LibraryType.WRONG -> UserLibrary.removeWrong(dbName, entry.wordId)
-                                LibraryType.FAVORITE -> UserLibrary.removeFavorite(dbName, entry.wordId)
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    when (type) {
+                                        LibraryType.WRONG -> UserLibrary.removeWrong(dbName, entry.wordId)
+                                        LibraryType.FAVORITE -> UserLibrary.removeFavorite(dbName, entry.wordId)
+                                    }
+                                }
+                                reloadEntries()
                             }
-                            refresh()
                         },
                     )
                 }

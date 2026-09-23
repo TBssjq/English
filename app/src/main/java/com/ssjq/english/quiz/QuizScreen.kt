@@ -38,6 +38,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -86,7 +87,19 @@ fun QuizScreen(
 ) {
     val context = LocalContext.current
     val fixedMode = remember(mode) { modeFromString(mode) }
-    val state = remember {
+    // key 必须带上出题参数：旧实现无 key，同一路由复用换词库/换题量时
+    // 会继续沿用上一轮的 QuizState，出的还是旧词库的题
+    // 不要用整个 sourceWords 列表做 key：List.equals 会逐元素深度比较，
+    // 疯狂刷题最多 100 个深嵌套 WordDetail，每次重组都要跑一次 O(n·depth) 比较。
+    // 用「数量 + 首尾 wordId」作为轻量且足够唯一的 key。
+    val state = remember(
+        dbName,
+        questionCount,
+        sourceWords.size,
+        sourceWords.firstOrNull()?.wordId,
+        sourceWords.lastOrNull()?.wordId,
+        fixedMode,
+    ) {
         QuizState(
             context = context,
             dbName = dbName,
@@ -97,30 +110,38 @@ fun QuizScreen(
         )
     }
 
-    LaunchedEffect(Unit) { state.load() }
+    LaunchedEffect(state) { state.load() }
+
+    // 离开页面时释放播放器，否则 MediaPlayer 会随 Activity 一起泄漏
+    DisposableEffect(state) {
+        onDispose { state.release() }
+    }
 
     val uiState = state.uiState
     var favoriteToggle by remember { mutableStateOf(0) }
     // 液态玻璃背景采样源
     val liquidBackdrop = rememberLayerBackdrop()
 
-    // 测验完成时自动打卡：答对数 + 总题数 + 学过的单词数
-    LaunchedEffect(uiState.isFinished) {
-        if (uiState.isFinished) {
+    // 测验完成时自动打卡：答对数 + 总题数 + 学过的单词数。
+    // consumeFinishReport() 是一次性哨兵，保证同一轮结果只上报一次
+    LaunchedEffect(uiState.isFinished, uiState.totalQuestions) {
+        if (!uiState.isFinished) return@LaunchedEffect
+        val report = state.consumeFinishReport() ?: return@LaunchedEffect
+        // 整段放到 IO：accumulate() 会把全部打卡记录 JSON 反序列化再写回，
+        // saveQuizRecord() 也会解析/序列化刷题记录，记录较多时在主线程会造成卡顿
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             CheckInManager.accumulate(
-                addQuizCorrect = uiState.correctCount,
-                addQuizTotal = uiState.totalQuestions,
-                addWordsLearned = uiState.totalQuestions,
+                addQuizCorrect = report.correctCount,
+                addQuizTotal = report.totalQuestions,
+                addWordsLearned = report.totalQuestions,
             )
             // 保存刷题记录
             val record = org.json.JSONObject().apply {
                 put("timestamp", System.currentTimeMillis())
                 put("dbName", dbName)
-                put("totalQuestions", uiState.totalQuestions)
-                put("correctCount", uiState.correctCount)
-                put("accuracy", if (uiState.totalQuestions > 0) {
-                    (uiState.correctCount.toDouble() / uiState.totalQuestions * 100).toInt()
-                } else 0)
+                put("totalQuestions", report.totalQuestions)
+                put("correctCount", report.correctCount)
+                put("accuracy", (report.correctCount.toDouble() / report.totalQuestions * 100).toInt())
             }.toString()
             com.ssjq.english.data.UserManager.saveQuizRecord(record)
         }
@@ -258,7 +279,9 @@ fun QuizScreen(
             ResultScreen(
                 correctCount = uiState.correctCount,
                 totalCount = uiState.totalQuestions,
-                wrongWords = uiState.wrongWords.size,
+                // 用去重后的数量：小题库会循环出词，同一词可能被错多次，
+                // 否则结果页「错题回顾(N)」的数字会大于实际回顾题量
+                wrongWords = state.distinctWrongCount(),
                 modeStats = uiState.modeStats,
                 onRestart = { state.dispatch(QuizIntent.Restart) },
                 onReviewWrong = { state.dispatch(QuizIntent.ReviewWrong) },

@@ -48,6 +48,7 @@ import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.LibraryFileManager
 import com.ssjq.english.data.LibraryRepository
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,7 +74,7 @@ fun ImportExportDialog(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         uri?.let { selectedUri ->
-            coroutineScope.launch {
+            coroutineScope.launch(Dispatchers.IO) {
                 performExport(context, selectedUri, selectedExportScope, selectedGroupName, selectedDbName, selectedContentType, onResult)
                 onDismiss()
             }
@@ -260,7 +261,9 @@ fun ImportExportDialog(
                                 LibraryCatalog.categories.forEach { category ->
                                     category.subcategories.forEach { sub ->
                                         sub.dbFiles.forEach { dbName ->
-                                            item(key = dbName) {
+                                            // key 必须全局唯一：同名词库文件可能出现在多个分类/子分类下，
+                                            // 仅用 dbName 会触发 LazyColumn 的 "Key was already used" 崩溃
+                                            item(key = "db-${category.name}-${sub.name}-$dbName") {
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth().clickable {
                                                         selectedDbName = dbName
@@ -374,7 +377,7 @@ fun ImportExportDialog(
                     onClick = {
                         val uri = pendingUri
                         if (uri != null) {
-                            coroutineScope.launch {
+                            coroutineScope.launch(Dispatchers.IO) {
                                 performImport(context, uri, selectedStrategy, onResult)
                             }
                         }
@@ -450,10 +453,8 @@ private suspend fun performExport(
         }
         android.util.Log.d("Export", "步骤1完成: 错题=${data.wrongWords.size}, 收藏=${data.favorites.size}")
 
-        android.util.Log.d("Export", "步骤2: 序列化JSON...")
-        val json = LibraryFileManager.serializeToJson(data)
-        android.util.Log.d("Export", "步骤2完成: JSON长度=${json.length}")
-
+        // 不再在此处预先序列化：writeFile 内部会序列化一次，
+        // 旧实现把同一份大 JSON 序列化两遍，纯属浪费
         android.util.Log.d("Export", "步骤3: 写入文件...")
         val success = LibraryFileManager.writeFile(context, uri, data)
         android.util.Log.d("Export", "步骤3完成: success=$success")

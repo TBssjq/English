@@ -119,7 +119,13 @@ fun EnglishTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
+            // 安全解包：view.context 可能是 ContextThemeWrapper 等包装，
+            // 直接 `as Activity` 在边缘配置下会抛 ClassCastException
+            var ctx: android.content.Context = view.context
+            while (ctx !is Activity && ctx is android.content.ContextWrapper) {
+                ctx = ctx.baseContext
+            }
+            val window = (ctx as? Activity)?.window ?: return@SideEffect
             val controller = WindowInsetsControllerCompat(window, view)
             // true = 状态栏图标为深色（适用于浅色背景）；false = 浅色图标（适用于深色背景）
             controller.isAppearanceLightStatusBars = !effectiveDarkTheme

@@ -1,13 +1,17 @@
 package com.ssjq.english.ui.common
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -17,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -35,9 +40,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
@@ -53,8 +63,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.ssjq.english.ui.nav.MainTab
 import kotlin.math.roundToInt
 import com.kyant.backdrop.Backdrop
@@ -366,7 +374,36 @@ fun LiquidGlassDialogSurface(
 }
 
 /**
- * 玻璃对话框：透明背景 + 玻璃表面，用于替换默认的纯色 AlertDialog。
+ * 玻璃弹窗可见性（应用级）。
+ *
+ * 玻璃对话框是「同窗口覆盖层」而不是系统 Dialog，只能覆盖它所在的容器，
+ * 悬浮底栏等后绘制的元素会盖在遮罩之上。宿主据此在弹窗可见时隐藏底栏。
+ */
+object GlassDialogHost {
+    private var visibleCount by mutableStateOf(0)
+
+    val isDialogVisible: Boolean get() = visibleCount > 0
+
+    internal fun acquire() {
+        visibleCount++
+    }
+
+    internal fun release() {
+        visibleCount = (visibleCount - 1).coerceAtLeast(0)
+    }
+}
+
+/**
+ * 玻璃对话框。
+ *
+ * 关键实现约束：**不使用 `androidx.compose.ui.window.Dialog`。**
+ * Dialog 会另起一个 Window（独立 ComposeView / GraphicsContext），
+ * 而 backdrop 的 GraphicsLayer 是录制在 Activity 窗口里的，
+ * 跨窗口绘制既拿不到正确的采样结果，也属于未定义行为（历史上直接导致
+ * 首启拉取公告弹出对话框时闪退）。
+ *
+ * 因此这里采用与液态玻璃库官方示例 `DialogContent` 一致的方案：
+ * 在当前窗口内叠一层半透明遮罩 + 居中玻璃面板，采样与绘制全部在同一窗口完成。
  *
  * @param backdrop 背景采样源（应为对话框下层页面的 backdrop，保证能采样到背后内容）
  */
@@ -375,17 +412,66 @@ fun LiquidGlassDialog(
     backdrop: Backdrop,
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
+    dismissOnClickOutside: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Dialog(
-        onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+    BackHandler(onBack = onDismissRequest)
+
+    DisposableEffect(Unit) {
+        GlassDialogHost.acquire()
+        onDispose { GlassDialogHost.release() }
+    }
+
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+
+    val scale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0.92f,
+        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        label = "glassDialogScale",
+    )
+    val alpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(durationMillis = 160),
+        label = "glassDialogAlpha",
+    )
+
+    val dimColor = if (isSystemInDarkTheme()) {
+        Color.Black.copy(alpha = 0.48f)
+    } else {
+        Color(0xFF1A1A2E).copy(alpha = 0.26f)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(dimColor)
+            .then(
+                if (dismissOnClickOutside) {
+                    Modifier.clickable(
+                        interactionSource = null,
+                        indication = null,
+                        onClick = onDismissRequest,
+                    )
+                } else {
+                    Modifier
+                }
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        LiquidGlassDialogSurface(
-            backdrop = backdrop,
-            modifier = modifier.fillMaxWidth(0.92f),
-            content = content,
-        )
+        Box(
+            modifier = Modifier.graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
+        ) {
+            LiquidGlassDialogSurface(
+                backdrop = backdrop,
+                modifier = modifier.fillMaxWidth(0.92f),
+                content = content,
+            )
+        }
     }
 }
 

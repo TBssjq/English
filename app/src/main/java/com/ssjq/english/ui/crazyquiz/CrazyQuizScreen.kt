@@ -96,9 +96,16 @@ fun CrazyQuizScreen(
         allDbs = withContext(Dispatchers.IO) { DatabaseManager.listAssetDatabases(context) }
     }
 
-    fun calculateStats() {
-        wrongCount = allDbs.sumOf { UserLibrary.wrongCount(it.removeSuffix(".db")) }
-        favoriteCount = allDbs.sumOf { UserLibrary.favoriteCount(it.removeSuffix(".db")) }
+    /** 统计错题/收藏数量：必须在 IO 线程，避免主线程解析大量 JSON 卡顿 */
+    suspend fun calculateStats() {
+        // 旧实现在主线程对 N 个词库各解析 2 次完整 JSON（共 2N 次），
+        // 几十个词库时明显卡顿。改为 IO 线程一次解析出各词库计数。
+        withContext(Dispatchers.IO) {
+            val wMap = UserLibrary.wrongCountByDb()
+            val fMap = UserLibrary.favoriteCountByDb()
+            wrongCount = allDbs.sumOf { wMap[it.removeSuffix(".db")] ?: 0 }
+            favoriteCount = allDbs.sumOf { fMap[it.removeSuffix(".db")] ?: 0 }
+        }
     }
 
     LaunchedEffect(allDbs) {
@@ -111,29 +118,37 @@ fun CrazyQuizScreen(
 
     LaunchedEffect(startQuizTrigger) {
         val source = startQuizTrigger ?: return@LaunchedEffect
-        val words = when (source) {
-            CrazyQuizSource.WRONG -> {
-                val entries = allDbs.flatMap { UserLibrary.wrongWords(it.removeSuffix(".db")) }
-                    .shuffled()
-                    .take(100)
-                entries.mapNotNull { getWordDetail(context, it) }
-            }
-            CrazyQuizSource.FAVORITE -> {
-                val entries = allDbs.flatMap { UserLibrary.favorites(it.removeSuffix(".db")) }
-                    .shuffled()
-                    .take(100)
-                entries.mapNotNull { getWordDetail(context, it) }
-            }
-            CrazyQuizSource.LIBRARY -> {
-                val raw = selectedDb ?: return@LaunchedEffect
-                // openDatabase 需要带 .db 后缀的资产文件名，缺失时补上，避免 FileNotFoundException
-                val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
-                withContext(Dispatchers.IO) {
+        // 整段搬到 IO 线程：旧实现在主线程循环调用 getWordDetail（每条一次线程
+        // 切换 + 一次开库 + 6 张关联表查询），100 条就是 100 次往返，错题本/
+        // 收藏夹较大时点击「开始刷题」会明显卡住界面
+        val words = withContext(Dispatchers.IO) {
+            when (source) {
+                CrazyQuizSource.WRONG -> {
+                    UserLibrary.allWrongWords()
+                        .shuffled()
+                        .take(100)
+                        .mapNotNull { loadEntryDetail(context, it) }
+                }
+                CrazyQuizSource.FAVORITE -> {
+                    UserLibrary.allFavorites()
+                        .shuffled()
+                        .take(100)
+                        .mapNotNull { loadEntryDetail(context, it) }
+                }
+                CrazyQuizSource.LIBRARY -> {
+                    val raw = selectedDb ?: return@withContext emptyList<WordDetail>()
+                    // openDatabase 需要带 .db 后缀的资产文件名，缺失时补上，
+                    // 避免 FileNotFoundException
+                    val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
                     try {
                         val db = DatabaseManager.openDatabase(context, dbName)
-                        val list = DatabaseManager.getWordList(db)
-                        list.shuffled().take(100).mapNotNull {
-                            DatabaseManager.getWordDetail(db, it.wordId)
+                        try {
+                            DatabaseManager.getWordList(db)
+                                .shuffled()
+                                .take(100)
+                                .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
+                        } finally {
+                            DatabaseManager.release(db)
                         }
                     } catch (_: Exception) {
                         emptyList()
@@ -148,13 +163,15 @@ fun CrazyQuizScreen(
     }
 
     fun onSourceSelected(source: CrazyQuizSource) {
-        selectedSource = source
+        // 先校验数量，再写状态：旧实现先赋值再 return，会在数量为 0 时
+        // 把 selectedSource 置为无效值却不做任何事，造成状态不同步
         if (source == CrazyQuizSource.WRONG && wrongCount == 0) {
             return
         }
         if (source == CrazyQuizSource.FAVORITE && favoriteCount == 0) {
             return
         }
+        selectedSource = source
         if (source == CrazyQuizSource.LIBRARY) {
             selectedDb = null
         } else {
@@ -539,14 +556,20 @@ private fun SelectDbScreen(
     }
 }
 
-private suspend fun getWordDetail(context: android.content.Context, entry: WordEntry): WordDetail? {
-    return withContext(Dispatchers.IO) {
+/**
+ * 取单词详情（同步，调用方已切到 IO 线程）。
+ * 旧实现每次查完都不释放连接，疯狂刷题加载 100 词会堆积 100 个 SQLite 连接。
+ */
+private fun loadEntryDetail(context: android.content.Context, entry: WordEntry): WordDetail? {
+    return try {
+        val db = DatabaseManager.openDatabase(context, entry.dbName + ".db")
         try {
-            val db = DatabaseManager.openDatabase(context, entry.dbName + ".db")
             DatabaseManager.getWordDetail(db, entry.wordId)
-        } catch (_: Exception) {
-            null
+        } finally {
+            DatabaseManager.release(db)
         }
+    } catch (_: Exception) {
+        null
     }
 }
 

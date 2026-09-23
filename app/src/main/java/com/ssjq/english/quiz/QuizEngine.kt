@@ -163,14 +163,22 @@ object QuizEngine {
         allWords: List<WordDetail>,
         random: Random,
     ): List<String> {
-        val pool = allWords.filter { it.wordId != correct.wordId && it.chineseText().isNotBlank() }
+        // 必须按「释义文本」排除正确答案：不同单词可能有完全相同的中文释义，
+        // 只按 wordId 去重会让选项里出现两份正确答案 —— 用户选中"正确答案的副本"
+        // 会被判错，且判定后两处同时高亮，题目事实上无解。
+        val correctCn = correct.chineseText()
+        val pool = allWords.filter {
+            it.wordId != correct.wordId &&
+                it.chineseText().isNotBlank() &&
+                it.chineseText() != correctCn
+        }
         // 按难度差排序，越近越优先
         val sorted = pool.sortedBy { Math.abs((it.star - correct.star)) }
         // 从前半区随机抽
         val candidates = sorted.take(minOf(sorted.size, 20)).shuffled(random)
         val result = candidates
             .map { it.chineseText() }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && it != correctCn }
             .distinct()
             .take(OPTION_COUNT - 1)
             .toMutableList()
@@ -186,13 +194,19 @@ object QuizEngine {
         allWords: List<WordDetail>,
         random: Random,
     ): List<String> {
-        val pool = allWords.filter { it.wordId != correct.wordId && it.headWord.isNotBlank() }
+        // 同样按文本排除正确答案（大小写不敏感），避免选项重复
+        val correctEn = correct.headWord.trim()
+        val pool = allWords.filter {
+            it.wordId != correct.wordId &&
+                it.headWord.isNotBlank() &&
+                !it.headWord.trim().equals(correctEn, ignoreCase = true)
+        }
         val targetLen = correct.headWord.length
         val sorted = pool.sortedBy { Math.abs(it.headWord.length - targetLen) }
         val candidates = sorted.take(minOf(sorted.size, 20)).shuffled(random)
         val result = candidates
             .map { it.headWord }
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && !it.trim().equals(correctEn, ignoreCase = true) }
             .distinct()
             .take(OPTION_COUNT - 1)
             .toMutableList()

@@ -114,6 +114,7 @@ import com.kyant.backdrop.shadow.Shadow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicReference
 
 data class WordSearchResult(val dbName: String, val word: WordDetail)
 
@@ -137,9 +138,14 @@ fun WordDetailScreen(
     var browseQueue by remember(dbName) { mutableStateOf<List<String>?>(null) }
     LaunchedEffect(dbName) {
         if (wordQueue == null) {
-            browseQueue = withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
-                DatabaseManager.getWordList(db).map { it.wordId }
+            // openDatabase 可能抛异常，未捕获会崩溃
+            browseQueue = try {
+                withContext(Dispatchers.IO) {
+                    val db = DatabaseManager.openDatabase(context, dbName)
+                    DatabaseManager.getWordList(db).map { it.wordId }
+                }
+            } catch (_: Exception) {
+                emptyList()
             }
         }
     }
@@ -169,12 +175,17 @@ fun WordDetailScreen(
         }
     }
 
-    // 收藏状态：随单词切换重新读取
-    var isFavorite by remember(currentWordId) {
-        mutableStateOf(UserLibrary.isFavorite(dbName, currentWordId))
-    }
-    var isWrong by remember(currentWordId) {
-        mutableStateOf(UserLibrary.isWrong(dbName, currentWordId))
+    // 收藏/错题状态：随单词切换重新读取。
+    // 放到 IO 线程读取，避免组合期同步解析完整 JSON（每翻一个词一次）阻塞主线程
+    var isFavorite by remember(currentWordId) { mutableStateOf(false) }
+    var isWrong by remember(currentWordId) { mutableStateOf(false) }
+    LaunchedEffect(currentWordId) {
+        val (fav, wr) = withContext(Dispatchers.IO) {
+            UserLibrary.isFavorite(dbName, currentWordId) to
+                UserLibrary.isWrong(dbName, currentWordId)
+        }
+        isFavorite = fav
+        isWrong = wr
     }
     // 液态玻璃背景采样源
     val liquidBackdrop = rememberLayerBackdrop()
@@ -200,19 +211,27 @@ fun WordDetailScreen(
 
     // 搜索单词：先在当前词库搜索，再在所有词库搜索
     suspend fun searchWord(word: String): WordSearchResult? {
-        // 先在当前词库搜索
-        val currentResult = withContext(Dispatchers.IO) {
-            val db = DatabaseManager.openDatabase(context, dbName)
-            DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+        // 先在当前词库搜索（openDatabase/searchWords 可能抛异常，需捕获）
+        val currentResult = try {
+            withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+            }
+        } catch (_: Exception) {
+            null
         }
         if (currentResult != null) return WordSearchResult(dbName, currentResult)
         // 在所有词库中搜索
         for (otherDb in allDbs) {
             val otherDbName = otherDb.removeSuffix(".db")
             if (otherDbName == dbName) continue
-            val result = withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, otherDbName)
-                DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    val db = DatabaseManager.openDatabase(context, otherDbName)
+                    DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+                }
+            } catch (_: Exception) {
+                null
             }
             if (result != null) return WordSearchResult(otherDbName, result)
         }
@@ -278,35 +297,77 @@ fun WordDetailScreen(
     }
 
     // 有道词典发音 API：https://dict.youdao.com/dictvoice?audio={word}&type={type}
-    // type=1 英音，type=2 美音。MediaPlayer 播放完自动 release。
-    val speak: (String, Int) -> Unit = { word, type ->
-        try {
-            val url = "https://dict.youdao.com/dictvoice?audio=" +
-                URLEncoder.encode(word, "UTF-8") + "&type=$type"
-            MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build()
-                )
-                setDataSource(url)
-                setOnPreparedListener { start() }
-                setOnCompletionListener { release() }
-                setOnErrorListener { _, _, _ -> release(); true }
-                prepareAsync()
+    // type=1 英音，type=2 美音。
+    //
+    // 旧实现每次发音都 new 一个 MediaPlayer 且不保存引用，只在播放完成/出错时回收：
+    // 连点发音会多个音频叠加，页面退出时正在缓冲的实例随 Activity 泄漏，
+    // 累积后突破 MediaPlayer 进程上限抛异常并静默失效。
+    // 现在复用单个实例，并在页面销毁时统一释放。
+    // 用 AtomicReference 而非 State：发音不需要触发重组。
+    val playerRef = remember { AtomicReference<MediaPlayer?>(null) }
+
+    fun releasePlayer() {
+        playerRef.getAndSet(null)?.let { player ->
+            try {
+                if (player.isPlaying) player.stop()
+                player.reset()
+                player.release()
+            } catch (_: Exception) {
+                // 释放失败无补救手段，忽略
             }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { releasePlayer() }
+    }
+
+    val speak: (String, Int) -> Unit = { word, type ->
+        val encoded = try {
+            URLEncoder.encode(word, "UTF-8")
         } catch (_: Exception) {
-            // 忽略播放失败
+            null
+        }
+        if (encoded != null) {
+            val url = "https://dict.youdao.com/dictvoice?audio=$encoded&type=$type"
+            releasePlayer()
+            try {
+                val player = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .build()
+                    )
+                    setDataSource(url)
+                    setOnPreparedListener { runCatching { start() } }
+                    setOnCompletionListener { releasePlayer() }
+                    setOnErrorListener { _, _, _ -> releasePlayer(); true }
+                    prepareAsync()
+                }
+                playerRef.set(player)
+            } catch (_: Exception) {
+                // 忽略播放失败
+                releasePlayer()
+            }
         }
     }
 
     LaunchedEffect(dbName, currentWordId) {
         loading = true
         revealed = false
-        detail = withContext(Dispatchers.IO) {
-            val db = DatabaseManager.openDatabase(context, dbName)
-            DatabaseManager.getWordDetail(db, currentWordId)
+        // 词库损坏 / 单词不存在时不能让异常从这里抛出去崩溃
+        detail = try {
+            withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                try {
+                    DatabaseManager.getWordDetail(db, currentWordId)
+                } finally {
+                    DatabaseManager.release(db)
+                }
+            }
+        } catch (_: Exception) {
+            null
         }
         loading = false
     }
@@ -408,6 +469,10 @@ fun WordDetailScreen(
                         .pointerInput(canSwipe) {
                             if (!canSwipe) return@pointerInput
                             detectDragGestures(
+                                onDragStart = {
+                                    // 每次拖拽从零起算；否则会叠加在上一轮的残留偏移上
+                                    dragOffset = Offset.Zero
+                                },
                                 onDrag = { change, amount ->
                                     change.consume()
                                     dragOffset = Offset(
@@ -444,6 +509,13 @@ fun WordDetailScreen(
                                             spellResult = null
                                         }
                                     }
+                                    dragOffset = Offset.Zero
+                                },
+                                onDragCancel = {
+                                    // 手势被取消时不会走 onDragEnd：
+                                    // ① 卡片背面的纵向滚动抢走手势；
+                                    // ② canSwipe 翻转导致 pointerInput 重启。
+                                    // 缺失此回调会让卡片永久停在偏移位置（最多 ±360px）。
                                     dragOffset = Offset.Zero
                                 },
                             )
@@ -1081,9 +1153,14 @@ fun WordStudyScreen(
     LaunchedEffect(dbName) {
         wordIds = null
         loadFailed = false
-        val ids = withContext(Dispatchers.IO) {
-            val db = DatabaseManager.openDatabase(context, dbName)
-            DatabaseManager.getWordList(db).map { it.wordId }
+        // openDatabase 可能抛异常，未捕获会崩溃
+        val ids = try {
+            withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                DatabaseManager.getWordList(db).map { it.wordId }
+            }
+        } catch (_: Exception) {
+            emptyList()
         }
         if (ids.isEmpty()) loadFailed = true else wordIds = ids
     }
@@ -1091,12 +1168,16 @@ fun WordStudyScreen(
     when {
         wordIds != null -> {
             val ids = wordIds!!
-            // 若指定了起始单词，则从该单词开始；否则读取上次进度（越界则回到 0）
-            var startIdx = if (startWordId != null) {
-                ids.indexOf(startWordId).takeIf { it >= 0 } ?: UserLibrary.studyIndex(dbName)
+            // 若指定了起始单词，则从该单词开始；否则读取上次进度。
+            // 起始下标必须夹到合法范围：
+            // ① 跨词库跳转时 indexOf 返回 -1；
+            // ② 回退到的 studyIndex 可能已超出当前词库长度（词库变小 / 切换过词库）。
+            // 任何一种都会让下面的 ids[startIdx] 直接越界崩溃。
+            val startIdx = if (startWordId != null) {
+                val found = ids.indexOf(startWordId)
+                if (found >= 0) found else UserLibrary.studyIndex(dbName).coerceIn(0, ids.lastIndex)
             } else {
-                val saved = UserLibrary.studyIndex(dbName)
-                if (saved >= ids.size) 0 else saved
+                UserLibrary.studyIndex(dbName).coerceIn(0, ids.lastIndex)
             }
             WordDetailScreen(
                 dbName = dbName,
@@ -1183,8 +1264,8 @@ private fun ClickableWordText(
     onWordClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val wordPattern = Regex("[a-zA-Z]+")
-    val matches = wordPattern.findAll(text).toList()
+    val wordPattern = remember { Regex("[a-zA-Z]+") }
+    val matches = remember(text, wordPattern) { wordPattern.findAll(text).toList() }
     
     if (matches.isEmpty()) {
         Text(text, style = MaterialTheme.typography.bodyMedium, modifier = modifier)

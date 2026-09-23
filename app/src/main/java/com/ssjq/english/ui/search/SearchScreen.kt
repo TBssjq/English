@@ -67,6 +67,7 @@ import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.ui.common.LiquidGlassCard
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -85,16 +86,36 @@ fun SearchScreen(
     // 液态玻璃背景采样源
     val liquidBackdrop = rememberLayerBackdrop()
 
+    // 上一次查询的任务与令牌：快速连续搜索时，慢返回的旧结果会覆盖新结果
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+    var searchToken by remember { mutableStateOf(0) }
+
     fun doSearch() {
         if (keyword.isBlank()) return
         searching = true
         keyboard?.hide()
-        scope.launch {
-            results = withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
-                DatabaseManager.searchWords(db, keyword.trim())
+        // 取消上一次查询，避免乱序覆盖
+        searchJob?.cancel()
+        val token = ++searchToken
+        searchJob = scope.launch {
+            try {
+                val kw = keyword.trim()
+                results = withContext(Dispatchers.IO) {
+                    val db = DatabaseManager.openDatabase(context, dbName)
+                    try {
+                        DatabaseManager.searchWords(db, kw)
+                    } finally {
+                        DatabaseManager.release(db)
+                    }
+                }
+            } catch (_: Exception) {
+                // 查询失败时保留上一次结果，不让列表莫名清空
+            } finally {
+                // 必须放 finally，否则异常时 searching 永远为 true，转圈永久卡死。
+                // 且只有「自己仍是最新一次查询」时才收起转圈：
+                // 被取消的旧任务若也来重置，会把新查询的转圈提前关掉。
+                if (token == searchToken) searching = false
             }
-            searching = false
         }
     }
 

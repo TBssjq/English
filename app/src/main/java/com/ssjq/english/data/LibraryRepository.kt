@@ -74,14 +74,13 @@ object LibraryRepository {
 
             when (strategy) {
                 ImportConflictStrategy.OVERWRITE -> {
-                    if (data.wrongWords.isNotEmpty()) {
-                        UserLibrary.writeList(UserLibrary.KEY_WRONG, data.wrongWords)
-                        addedWrong = data.wrongWords.size
-                    }
-                    if (data.favorites.isNotEmpty()) {
-                        UserLibrary.writeList(UserLibrary.KEY_FAVORITE, data.favorites)
-                        addedFav = data.favorites.size
-                    }
+                    // OVERWRITE 语义是「清空现有数据再导入」：即使导入文件里列表为空，
+                    // 也必须写入空列表以清空旧数据。旧实现用 isNotEmpty() 跳过写入，
+                    // 导致空数据无法覆盖旧数据，与 UI 描述不符。
+                    UserLibrary.writeList(UserLibrary.KEY_WRONG, data.wrongWords)
+                    addedWrong = data.wrongWords.size
+                    UserLibrary.writeList(UserLibrary.KEY_FAVORITE, data.favorites)
+                    addedFav = data.favorites.size
                 }
 
                 ImportConflictStrategy.MERGE_DUPLICATE -> {

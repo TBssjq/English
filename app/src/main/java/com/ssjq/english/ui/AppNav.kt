@@ -1,7 +1,8 @@
 package com.ssjq.english.ui
 
-import android.content.Intent
-import android.net.Uri
+import android.app.Activity
+import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -53,6 +54,7 @@ import com.ssjq.english.data.UserManager
 import com.ssjq.english.quiz.QuizScreen
 import com.ssjq.english.ui.about.AboutScreen
 import com.ssjq.english.ui.checkin.CheckInScreen
+import com.ssjq.english.ui.common.GlassDialogHost
 import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.ui.glass.LiquidBottomTab
 import com.ssjq.english.ui.glass.LiquidBottomTabs
@@ -144,13 +146,16 @@ fun AppNav() {
             // 仅首次进入强制拉取并展示公告，之后不再强制弹出
             if (!UserManager.hasSeenAnnouncement()) {
                 val (notice, result) = AppUpdateManager.fetchNotice()
-                if (result == NoticeResult.HAS_NOTICE && notice != null) {
+                // 网络失败不标记为已读，下次进入仍会重试；解析不出内容也不弹空对话框
+                if (result != NoticeResult.NETWORK_ERROR) {
+                    UserManager.markAnnouncementSeen()
+                }
+                if (result == NoticeResult.HAS_NOTICE && notice != null && notice.hasContent()) {
                     withContext(Dispatchers.Main) {
                         latestNotice = notice
                         showNoticeDialog = true
                     }
                 }
-                UserManager.markAnnouncementSeen()
             }
         }
 
@@ -162,17 +167,41 @@ fun AppNav() {
     val isTopLevel = backStack.size <= 1
     val current: Any = backStack.last()
 
+    /**
+     * 过场期间锁定导航。
+     *
+     * AnimatedContent 切换的 280ms 内，**旧页面仍然留在组合树中且完全可点击**
+     * （它的返回箭头、列表项都还在）。此时若再响应一次返回或跳转，就会
+     * 一次退掉多级页面，甚至在返回途中又压入新页面，栈状态错乱。
+     * 这里用一个略长于过场时长的时间窗把这类误触挡掉。
+     */
+    var navLockedUntil by remember { mutableStateOf(0L) }
+
+    fun isNavLocked(): Boolean = SystemClock.uptimeMillis() < navLockedUntil
+
+    fun lockNav() {
+        navLockedUntil = SystemClock.uptimeMillis() + 320
+    }
+
     fun navigate(route: Any) {
+        if (isNavLocked()) return
+        lockNav()
         backStack.add(route)
     }
 
     fun back() {
-        if (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+        if (isNavLocked()) return
+        if (backStack.size > 1) {
+            lockNav()
+            backStack.removeAt(backStack.lastIndex)
+        }
     }
 
     /** 切换底部页签：回到该页签的根页面 */
     fun selectTab(tab: MainTab) {
         if (tab == currentTab && isTopLevel) return
+        if (isNavLocked()) return
+        lockNav()
         currentTab = tab
         val root: Any = when (tab) {
             MainTab.STUDY -> Home
@@ -193,12 +222,7 @@ fun AppNav() {
 
     fun openNoticeUrl() {
         val n = latestNotice ?: return
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(n.url)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(intent)
-        } catch (_: Exception) { }
+        AppUpdateManager.openUrl(context, n.url)
         if (!n.isForce) {
             showNoticeDialog = false
         }
@@ -206,10 +230,22 @@ fun AppNav() {
 
     BackHandler(enabled = backStack.size > 1) { back() }
 
-    // 全局背景采样源：仅当「底栏/弹窗」这类需要透视背景的玻璃元素可见时才录制。
-    // 处在二级页面（无底栏、无弹窗）时不录制，避免不必要的全屏离屏渲染。
+    // 顶层页面按返回键：2 秒内连按两次才退出。
+    // 旧实现在顶层没有 BackHandler，误触一下就直接杀掉 App，
+    // 学习进度、答题状态全部丢失。
+    var lastBackPressAt by remember { mutableStateOf(0L) }
+    BackHandler(enabled = backStack.size <= 1) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastBackPressAt < 2000) {
+            (context as? Activity)?.finish()
+        } else {
+            lastBackPressAt = now
+            Toast.makeText(context, "再按一次退出", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // 全局背景采样源：底栏与弹窗统一采样这一层固定背景。
     val appBackdrop = rememberLayerBackdrop()
-    val glassDialogVisible = showUpdateDialog || showNoticeDialog
 
     Box(modifier = Modifier.fillMaxSize()) {
         // 全局玻璃采样源：固定背景层（渐变 + 彩色光斑）。
@@ -349,17 +385,23 @@ fun AppNav() {
         }   // AnimatedContent 结束
         }   // 内容区（backdrop 采样源）结束：底栏与弹窗必须在此之外
 
-        // 悬浮式液态玻璃底部导航栏（直接采用库提供的 LiquidBottomTabs）：仅在顶层页面显示
-        if (isTopLevel) {
+        // 悬浮式液态玻璃底部导航栏（直接采用库提供的 LiquidBottomTabs）：仅在顶层页面显示。
+        // 玻璃弹窗是同窗口覆盖层，底栏在其之后绘制会盖住遮罩，因此弹窗可见时临时隐藏底栏。
+        if (isTopLevel && !GlassDialogHost.isDialogVisible) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
                     .padding(bottom = 8.dp),
             ) {
+                // 这两个 lambda 必须保持引用稳定：LiquidBottomTabs 内部把它们作为
+                // remember 的 key，若每次重组都新建实例，会导致内部指示器状态被反复重置。
+                // selectedTabIndex 仅在 currentTab 真正变化时重建，onTabSelected 永久稳定。
+                val selectedIndexLambda = remember(currentTab) { { currentTab.ordinal } }
+                val onTabSelectedStable = remember { { index: Int -> selectTab(MainTab.entries[index]) } }
                 LiquidBottomTabs(
-                    selectedTabIndex = { currentTab.ordinal },
-                    onTabSelected = { selectTab(MainTab.entries[it]) },
+                    selectedTabIndex = selectedIndexLambda,
+                    onTabSelected = onTabSelectedStable,
                     backdrop = appBackdrop,
                     tabsCount = MainTab.entries.size,
                     modifier = Modifier.padding(horizontal = 20.dp),
@@ -440,8 +482,10 @@ fun AppNav() {
                         }
                         Spacer(Modifier.width(8.dp))
                     }
-                    TextButton(onClick = { openNoticeUrl() }) {
-                        Text(n.btnText.ifBlank { "查看详情" })
+                    if (n.url.isNotBlank()) {
+                        TextButton(onClick = { openNoticeUrl() }) {
+                            Text(n.btnText.ifBlank { "查看详情" })
+                        }
                     }
                 }
             }

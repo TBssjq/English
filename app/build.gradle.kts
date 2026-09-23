@@ -1,7 +1,21 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// 读取本地 keystore.properties（不提交，见 .gitignore）；
+// 文件不存在时 release 保持未签名，不影响 debug 构建
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.inputStream().use { stream -> keystoreProps.load(stream) }
+}
+val ksStoreFile: String? = keystoreProps.getProperty("storeFile")
+val ksStorePassword: String? = keystoreProps.getProperty("storePassword")
+val ksKeyAlias: String? = keystoreProps.getProperty("keyAlias")
+val ksKeyPassword: String? = keystoreProps.getProperty("keyPassword")
 
 android {
     namespace = "com.ssjq.english"
@@ -15,10 +29,22 @@ android {
         applicationId = "com.ssjq.english"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // 仅当 keystore.properties 存在时创建 release 签名配置
+        if (keystorePropsFile.exists() && ksStoreFile != null) {
+            create("release") {
+                storeFile = file(ksStoreFile)
+                storePassword = ksStorePassword
+                keyAlias = ksKeyAlias
+                keyPassword = ksKeyPassword
+            }
+        }
     }
 
     buildTypes {
@@ -29,6 +55,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

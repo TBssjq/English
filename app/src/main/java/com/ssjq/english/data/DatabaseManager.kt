@@ -4,6 +4,8 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import java.io.File
+import java.io.FileNotFoundException
+import java.util.concurrent.ConcurrentHashMap
 
 /** 通用查询结果（用于浏览表 / 自定义 SQL） */
 data class QueryResult(
@@ -54,14 +56,49 @@ data class SearchResultItem(
  * 数据库管理器：将 assets 中的 db 文件按需复制到内部缓存目录，
  * 再以只读方式打开查询。所有查询均用 SELECT * + 按列名容错取值，
  * 兼容不同词库间表结构差异（如 rem_method_val / rem_method）。
+ *
+ * ## 连接管理（重要）
+ * 旧实现是「全局单连接 + 切换到别的词库就 close() 旧的」。
+ * 这在并发场景下会把别人正在用的句柄关掉 —— 典型路径：单词详情页正在
+ * 加载详情，同时用户触发跨库搜索，搜索循环打开其它词库时 close() 掉详情
+ * 协程手里的连接，下一句 rawQuery 抛
+ * `IllegalStateException: attempt to re-open an already-closed object`。
+ *
+ * 现改为**按词库分连接 + 引用计数**：
+ * - 同一词库复用同一连接，切换词库不再关闭任何连接；
+ * - 只有引用计数归零、或长时间闲置的连接才会被回收，绝不误关在用句柄；
+ * - 配套 [release] 与 [withDatabase]（自动归还）。
  */
 object DatabaseManager {
 
     private const val DB_DIR = "query_dbs"
 
+    /** 软上限：超过后开始回收「引用计数为 0」的连接 */
+    private const val MAX_IDLE_OPEN = 12
+    /** 硬上限：所有连接都在使用时的兜底阈值 */
+    private const val MAX_TOTAL_OPEN = 32
+    /** 兜底回收的闲置时长。正常查询都是毫秒级，120s 足以避免误伤 */
+    private const val IDLE_RECLAIM_NANOS = 120_000_000_000L
+
+    /** 合法词库名：仅字母数字、下划线、连字符，且以 .db 结尾（防路径穿越） */
+    private val SAFE_DB_NAME = Regex("^[A-Za-z0-9_-]+\\.db$")
+    /** 合法表名（防 SQL 注入，表名来自被打开的第三方 db 的 sqlite_master） */
+    private val SAFE_TABLE_NAME = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+
+    private class Conn(val db: SQLiteDatabase) {
+        var refs: Int = 0
+        var lastUsedNanos: Long = System.nanoTime()
+    }
+
+    /** 按词库缓存的只读连接。所有访问都在同步方法内进行 */
+    private val pool = LinkedHashMap<String, Conn>()
+
+    /** 每个词库一把拷贝锁，避免并发写同一文件造成词库损坏 */
+    private val copyLocks = ConcurrentHashMap<String, Any>()
+
+    /** assets 下 .db 列表缓存（assets.list 是较重的 JNI 调用，且结果不会变） */
     @Volatile
-    private var current: SQLiteDatabase? = null
-    private var currentName: String? = null
+    private var assetDbNames: List<String>? = null
 
     private fun dbDir(context: Context): File {
         val dir = File(context.cacheDir, DB_DIR)
@@ -69,50 +106,161 @@ object DatabaseManager {
         return dir
     }
 
-    /** 列出 assets 下所有 .db 文件 */
-    fun listAssetDatabases(context: Context): List<String> =
-        context.assets.list("")?.filter { it.endsWith(".db") }?.sorted() ?: emptyList()
-
-    /** 把指定 db 从 assets 复制到缓存目录（已存在则跳过），返回可打开的文件路径 */
-    private fun ensureCopied(context: Context, dbName: String): String {
-        val target = File(dbDir(context), dbName)
-        if (!target.exists() || target.length() == 0L) {
-            context.assets.open(dbName).use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            }
-        }
-        return target.absolutePath
+    /**
+     * 列出 assets 下所有 .db 文件。
+     * 结果会被缓存：assets 内容运行期不会变化，没必要每次都走 JNI 遍历。
+     */
+    fun listAssetDatabases(context: Context): List<String> {
+        assetDbNames?.let { return it }
+        val names = (context.assets.list("")?.filter { it.endsWith(".db") } ?: emptyList()).sorted()
+        assetDbNames = names
+        return names
     }
 
-    @Synchronized
-    fun openDatabase(context: Context, dbName: String): SQLiteDatabase {
-        current?.let {
-            if (currentName == dbName) {
-                if (!it.isOpen) {
-                    current = null
-                    currentName = null
-                } else {
-                    return it
-                }
+    /** 归一化词库名：去掉路径分隔符，缺 .db 后缀时补上 */
+    private fun normalizeDbName(raw: String): String {
+        val n = raw.substringAfterLast('/').substringAfterLast('\\').trim()
+        return if (n.endsWith(".db", ignoreCase = true)) n else "$n.db"
+    }
+
+    /** 在 assets 中定位词库文件，找不到返回 null */
+    private fun resolveAssetName(context: Context, dbName: String): String? {
+        val names = listAssetDatabases(context)
+        return dbName.takeIf { it in names }
+    }
+
+    /**
+     * 把指定 db 从 assets 复制到缓存目录，返回可打开的文件路径。
+     *
+     * 三个关键加固：
+     * 1. **按词库加锁**：并发的首屏词数统计与跨库搜索会同时触发同一文件的拷贝，
+     *    无锁时两个 FileOutputStream 交错写同一文件，词库永久损坏且无法自愈；
+     * 2. **原子替换**：先写 .tmp 再 rename，中断只会留下 .tmp 垃圾，
+     *    不会留下「长度非 0 的半成品」被误判为已拷贝完成；
+     * 3. **异常清理**：失败时删除残留文件，下次进入重新拷贝。
+     */
+    private fun ensureCopied(context: Context, rawName: String): String {
+        val dbName = normalizeDbName(rawName)
+        if (!SAFE_DB_NAME.matches(dbName)) {
+            throw IllegalArgumentException("非法词库名: $rawName")
+        }
+        val target = File(dbDir(context), dbName)
+        if (target.exists() && target.length() > 0L) return target.absolutePath
+
+        val lock = copyLocks.getOrPut(dbName) { Any() }
+        return synchronized(lock) {
+            // 双检：拿到锁后可能已被其它线程拷好
+            if (target.exists() && target.length() > 0L) {
+                target.absolutePath
             } else {
-                it.close()
-                current = null
-                currentName = null
+                val tmp = File(target.parentFile, "$dbName.tmp")
+                try {
+                    val assetName = resolveAssetName(context, dbName)
+                        ?: throw FileNotFoundException("assets 中不存在词库: $dbName")
+                    context.assets.open(assetName).use { input ->
+                        tmp.outputStream().use { output ->
+                            input.copyTo(output)
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    }
+                    if (tmp.renameTo(target)) {
+                        target.absolutePath
+                    } else {
+                        // 极少数文件系统 rename 失败：直接用 tmp 路径打开，至少可用
+                        tmp.absolutePath
+                    }
+                } catch (e: Exception) {
+                    tmp.delete()
+                    throw e
+                }
             }
         }
+    }
+
+    /**
+     * 获取词库的只读连接（引用计数 +1）。
+     *
+     * 同一词库始终复用同一连接，**切换词库不会关闭任何连接**，
+     * 因此不会再把并发协程手里正在用的句柄关掉。
+     * 使用完毕请调用 [release]；无法配对时连接会在闲置后被自动回收，不会泄漏。
+     */
+    @Synchronized
+    fun openDatabase(context: Context, dbName: String): SQLiteDatabase {
+        val key = normalizeDbName(dbName)
+        val existing = pool[key]
+        if (existing != null && existing.db.isOpen) {
+            existing.refs++
+            existing.lastUsedNanos = System.nanoTime()
+            return existing.db
+        }
+        if (existing != null) {
+            // 连接已被外部关闭，丢弃后重建
+            pool.remove(key)
+        }
+
+        reclaimIfNeeded()
+
         val db = SQLiteDatabase.openDatabase(
-            ensureCopied(context, dbName), null, SQLiteDatabase.OPEN_READONLY
+            ensureCopied(context, key), null, SQLiteDatabase.OPEN_READONLY
         )
-        current = db
-        currentName = dbName
+        pool[key] = Conn(db).also { it.refs = 1 }
         return db
     }
 
+    /** 归还连接，与 [openDatabase] 成对调用 */
+    @Synchronized
+    fun release(db: SQLiteDatabase?) {
+        if (db == null) return
+        val key = pool.entries.firstOrNull { it.value.db === db }?.key ?: return
+        val conn = pool[key] ?: return
+        conn.refs = (conn.refs - 1).coerceAtLeast(0)
+        conn.lastUsedNanos = System.nanoTime()
+        if (conn.refs == 0) reclaimIfNeeded()
+    }
+
+    /** 带租借的查询：自动归还连接，推荐所有新代码使用 */
+    fun <T> withDatabase(context: Context, dbName: String, block: (SQLiteDatabase) -> T): T {
+        val db = openDatabase(context, dbName)
+        return try {
+            block(db)
+        } finally {
+            release(db)
+        }
+    }
+
+    /** 关闭全部连接（退出应用时调用） */
     @Synchronized
     fun closeDatabase() {
-        current?.close()
-        current = null
-        currentName = null
+        pool.values.forEach { runCatching { it.db.close() } }
+        pool.clear()
+    }
+
+    /**
+     * 按需回收连接：优先回收引用计数为 0 的；
+     * 全部都在使用时，仅回收闲置超过 [IDLE_RECLAIM_NANOS] 的作为兜底。
+     */
+    private fun reclaimIfNeeded() {
+        if (pool.size <= MAX_IDLE_OPEN) return
+
+        val idle = pool.entries.filter { it.value.refs == 0 }
+            .sortedBy { it.value.lastUsedNanos }
+        for (e in idle) {
+            if (pool.size <= MAX_IDLE_OPEN) break
+            runCatching { e.value.db.close() }
+            pool.remove(e.key)
+        }
+
+        if (pool.size <= MAX_TOTAL_OPEN) return
+        val now = System.nanoTime()
+        val stale = pool.entries
+            .filter { now - it.value.lastUsedNanos > IDLE_RECLAIM_NANOS }
+            .sortedBy { it.value.lastUsedNanos }
+        for (e in stale) {
+            if (pool.size <= MAX_TOTAL_OPEN) break
+            runCatching { e.value.db.close() }
+            pool.remove(e.key)
+        }
     }
 
     /**
@@ -121,15 +269,20 @@ object DatabaseManager {
      * 用于首页展示词库规模，不影响正在使用的词库连接。
      */
     fun getWordCount(context: Context, dbName: String): Int {
-        val path = ensureCopied(context, dbName)
-        SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-            db.rawQuery(
-                "SELECT COUNT(*) FROM words WHERE head_word IS NOT NULL", null
-            ).use { c ->
-                if (c.moveToFirst()) return c.getInt(0)
+        // 词库损坏 / assets 缺失 / 表结构异常一律按 0 处理，绝不让首屏统计把 App 带崩
+        return try {
+            val path = ensureCopied(context, dbName)
+            SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                if (!tableExists(db, "words")) return 0
+                db.rawQuery(
+                    "SELECT COUNT(*) FROM words WHERE head_word IS NOT NULL", null
+                ).use { c ->
+                    if (c.moveToFirst()) c.getInt(0) else 0
+                }
             }
+        } catch (_: Exception) {
+            0
         }
-        return 0
     }
 
     /**
@@ -152,10 +305,12 @@ object DatabaseManager {
             try {
                 SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
                     // 检查 words 和 trans 表是否存在
-                    val hasWords = tableExistsInternal(db, "words")
-                    if (!hasWords) return@use
-                    val hasTrans = tableExistsInternal(db, "trans")
+                    if (!tableExists(db, "words")) return@use
+                    val hasTrans = tableExists(db, "trans")
 
+                    // 先取出本库命中的单词，再用一次 IN 批量取释义，
+                    // 避免旧实现「每个单词一次 rawQuery」的 N+1 查询
+                    val heads = mutableListOf<Pair<String, String>>()
                     db.rawQuery(
                         "SELECT word_id, head_word FROM words WHERE head_word LIKE ? " +
                             "ORDER BY word_rank LIMIT ?",
@@ -164,23 +319,34 @@ object DatabaseManager {
                         while (wc.moveToNext()) {
                             val wordId = wc.getString(0) ?: continue
                             val headWord = wc.getString(1) ?: continue
-                            val tranCn = if (hasTrans) {
-                                db.rawQuery(
-                                    "SELECT tran_cn FROM trans WHERE word_id=? LIMIT 1",
-                                    arrayOf(wordId)
-                                ).use { tc ->
-                                    if (tc.moveToFirst()) tc.getString(0) else null
-                                }
-                            } else null
-                            results.add(
-                                SearchResultItem(
-                                    wordId = wordId,
-                                    headWord = headWord,
-                                    tranCn = tranCn,
-                                    dbName = dbName.removeSuffix(".db"),
-                                )
-                            )
+                            heads.add(wordId to headWord)
                         }
+                    }
+                    if (heads.isEmpty()) return@use
+
+                    val tranMap = mutableMapOf<String, String?>()
+                    if (hasTrans) {
+                        val placeholders = heads.joinToString(",") { "?" }
+                        val ids = heads.map { it.first }.toTypedArray()
+                        db.rawQuery(
+                            "SELECT word_id, tran_cn FROM trans WHERE word_id IN ($placeholders)",
+                            ids
+                        ).use { tc ->
+                            while (tc.moveToNext()) {
+                                val wid = tc.getString(0) ?: continue
+                                if (wid !in tranMap) tranMap[wid] = tc.getString(1)
+                            }
+                        }
+                    }
+                    heads.forEach { (wordId, headWord) ->
+                        results.add(
+                            SearchResultItem(
+                                wordId = wordId,
+                                headWord = headWord,
+                                tranCn = tranMap[wordId],
+                                dbName = dbName.removeSuffix(".db"),
+                            )
+                        )
                     }
                 }
             } catch (_: Exception) {
@@ -191,9 +357,6 @@ object DatabaseManager {
         return results.sortedBy { it.headWord.lowercase() }
     }
 
-    private fun tableExistsInternal(db: SQLiteDatabase, table: String): Boolean =
-        db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table))
-            .use { it.moveToFirst() }
 
     /** 获取所有用户表 */
     fun getTables(db: SQLiteDatabase): List<String> {
@@ -206,21 +369,54 @@ object DatabaseManager {
         return tables
     }
 
-    /** 执行任意 SELECT，返回结果 */
-    fun runQuery(db: SQLiteDatabase, sql: String): QueryResult {
-        db.rawQuery(sql, null).use { cursor ->
-            val columns = cursor.columnNames.toList()
-            val rows = ArrayList<List<String?>>(cursor.count)
-            while (cursor.moveToNext()) {
-                rows.add((0 until cursor.columnCount).map { cursor.getString(it) })
+    /** 执行任意 SELECT，返回结果。SQL 非法时返回空结果而不是抛异常 */
+    fun runQuery(db: SQLiteDatabase, sql: String): QueryResult = runQuery(db, sql, null)
+
+    /** 执行参数化 SELECT，返回结果。SQL 非法时返回空结果而不是抛异常 */
+    fun runQuery(db: SQLiteDatabase, sql: String, args: Array<String>?): QueryResult {
+        return try {
+            db.rawQuery(sql, args).use { cursor ->
+                val columns = cursor.columnNames.toList()
+                val rows = ArrayList<List<String?>>(cursor.count.coerceAtLeast(0))
+                while (cursor.moveToNext()) {
+                    rows.add((0 until cursor.columnCount).map { i ->
+                        // 列可能是 BLOB / 超长文本，取值失败按 null 处理
+                        try {
+                            cursor.getString(i)
+                        } catch (_: Exception) {
+                            null
+                        }
+                    })
+                }
+                QueryResult(columns, rows)
             }
-            return QueryResult(columns, rows)
+        } catch (_: Exception) {
+            QueryResult(emptyList(), emptyList())
         }
     }
 
-    /** 浏览某张表 */
-    fun browseTable(db: SQLiteDatabase, table: String, limit: Int = 100, offset: Int = 0): QueryResult =
-        runQuery(db, "SELECT * FROM `$table` LIMIT $limit OFFSET $offset")
+    /**
+     * 浏览某张表。
+     *
+     * 表名来自被打开的第三方 db 的 sqlite_master，属于不可信输入，
+     * 因此做白名单校验（旧实现用反引号包裹，表名里再带反引号即可注入），
+     * LIMIT / OFFSET 统一用参数绑定。
+     */
+    fun browseTable(
+        db: SQLiteDatabase,
+        table: String,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): QueryResult {
+        if (!SAFE_TABLE_NAME.matches(table)) return QueryResult(emptyList(), emptyList())
+        val safeLimit = limit.coerceIn(1, 1000)
+        val safeOffset = offset.coerceAtLeast(0)
+        return runQuery(
+            db,
+            "SELECT * FROM \"$table\" LIMIT ? OFFSET ?",
+            arrayOf(safeLimit.toString(), safeOffset.toString()),
+        )
+    }
 
     /** 获取词汇列表（按 word_rank 排序，关联第一条释义） */
     fun getWordList(db: SQLiteDatabase): List<WordListItem> {
@@ -312,9 +508,22 @@ object DatabaseManager {
         return results
     }
 
-    private fun tableExists(db: SQLiteDatabase, table: String): Boolean =
-        db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table))
-            .use { it.moveToFirst() }
+    // 表结构在连接生命周期内不变，缓存探测结果可避免每条查询都打 sqlite_master。
+    // WeakHashMap：连接被回收后缓存条目自动清理，不会泄漏。
+    private val tableCache = java.util.WeakHashMap<SQLiteDatabase, MutableMap<String, Boolean>>()
+
+    private fun tableExists(db: SQLiteDatabase, table: String): Boolean {
+        synchronized(tableCache) {
+            val cache = tableCache.getOrPut(db) { mutableMapOf() }
+            cache[table]?.let { return it }
+            val exists = db.rawQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                arrayOf(table)
+            ).use { it.moveToFirst() }
+            cache[table] = exists
+            return exists
+        }
+    }
 
     private fun queryTrans(db: SQLiteDatabase, wordId: String): List<TransItem> {
         if (!tableExists(db, "trans")) return emptyList()

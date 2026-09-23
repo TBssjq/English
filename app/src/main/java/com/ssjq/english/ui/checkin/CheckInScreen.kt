@@ -60,6 +60,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,15 +107,31 @@ import java.util.Locale
 @Composable
 fun CheckInScreen(onBack: () -> Unit) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    var stats by remember { mutableStateOf(CheckInManager.stats()) }
-    var recent by remember { mutableStateOf(CheckInManager.recentDays(84)) } // 12 周
+    val scope = rememberCoroutineScope()
+    // 先给默认值，避免首帧就在主线程解析 SP 里的 JSON（记录多时卡顿）
+    var stats by remember { mutableStateOf(CheckInManager.EmptyStats) }
+    var recent by remember { mutableStateOf<List<CheckInRecord?>>(emptyList()) }
     // 液态玻璃背景采样源
     val liquidBackdrop = rememberLayerBackdrop()
 
-    // 进入页面时刷新一次（学习行为可能在其他页面已触发打卡）
-    LaunchedEffect(Unit) {
-        stats = CheckInManager.stats()
-        recent = CheckInManager.recentDays(84)
+    // stats()/recentDays() 都要解析 SP 里的 JSON，统一放到 IO 线程刷新，
+    // 并在从其它页面返回时（学习行为会触发自动打卡）重新拉取
+    fun refresh() {
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                stats = CheckInManager.stats()
+                recent = CheckInManager.recentDays(84)
+            }
+        }
+    }
+    LaunchedEffect(Unit) { refresh() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -477,7 +501,13 @@ private fun ContributionHeatmap(records: List<CheckInRecord?>, backdrop: Backdro
                         modifier = Modifier
                             .size(12.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(heatColor(level)),
+                            .background(
+                                heatColor(
+                                    level = level,
+                                    primary = MaterialTheme.colorScheme.primary,
+                                    emptyColor = MaterialTheme.colorScheme.surfaceVariant,
+                                )
+                            ),
                     )
                     Spacer(Modifier.width(3.dp))
                 }
@@ -494,10 +524,11 @@ private fun ContributionHeatmap(records: List<CheckInRecord?>, backdrop: Backdro
 @Composable
 private fun HeatmapCell(record: CheckInRecord?) {
     val level = heatLevel(record)
-    val color = heatColor(level)
-    val tooltip = record?.let {
-        "${it.date}：${it.wordsLearned} 词 / ${it.studyMinutes} 分钟"
-    } ?: "未学习"
+    val color = heatColor(
+        level = level,
+        primary = MaterialTheme.colorScheme.primary,
+        emptyColor = MaterialTheme.colorScheme.surfaceVariant,
+    )
     Box(
         modifier = Modifier
             .size(14.dp)
@@ -519,16 +550,13 @@ private fun heatLevel(record: CheckInRecord?): Int {
     }
 }
 
-/** 热力图配色（与主题 primary 同色系，深浅递进） */
-private fun heatColor(level: Int): Color {
-    val primary = Color(0xFF6750A4) // M3 默认 primary
-    return when (level) {
-        0 -> Color(0xFFE7E0EC) // 浅灰紫
-        1 -> primary.copy(alpha = 0.25f)
-        2 -> primary.copy(alpha = 0.5f)
-        3 -> primary.copy(alpha = 0.75f)
-        else -> primary
-    }
+/** 热力图配色（跟随主题 primary，深浅色模式自动适配） */
+private fun heatColor(level: Int, primary: Color, emptyColor: Color): Color = when (level) {
+    0 -> emptyColor
+    1 -> primary.copy(alpha = 0.25f)
+    2 -> primary.copy(alpha = 0.5f)
+    3 -> primary.copy(alpha = 0.75f)
+    else -> primary
 }
 
 // ---------------- 成就徽章 ----------------
