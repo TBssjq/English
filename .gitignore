@@ -3,6 +3,7 @@
 .vscode/
 .codebuddy/
 .trae/
+.dbg/
 
 .gradle
 /local.properties
