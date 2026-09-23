@@ -21,7 +21,7 @@
 ### 2. 版本锁（改动前务必确认）
 | 配置 | 值 | 原因 |
 |---|---|---|
-| AGP | 9.3.2 | 稳定版，配合 Gradle 9.7.1 |
+| AGP | 9.4.1 | 配合 Gradle 9.7.1 |
 | Gradle | 9.7.1 | wrapper 指向腾讯云镜像 |
 | Kotlin（catalog） | **2.2.10** | 必须与 AGP 内置 Kotlin 一致 |
 | Compose BOM | 2025.12.01 | backdrop 源码需要 1.9+ 的 `GraphicsLayerScope.blendMode` |
