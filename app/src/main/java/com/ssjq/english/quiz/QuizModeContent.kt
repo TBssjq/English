@@ -374,10 +374,12 @@ private fun SpellingContent(
             onValueChange = onInputChange,
             modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
             placeholder = { Text("输入英文单词…") },
-            textStyle = MaterialTheme.typography.titleLarge.copy(
+            // 字号放大到 headlineMedium 并拉开字距，方便逐字母核对自己输入的内容
+            textStyle = MaterialTheme.typography.headlineMedium.copy(
                 fontFamily = FontFamily.Serif,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
+                letterSpacing = 2.sp,
             ),
             singleLine = true,
             enabled = idle,
@@ -399,13 +401,20 @@ private fun SpellingContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
-        if (answerResult is AnswerResult.Wrong && answerResult.diffInfo.isNotEmpty()) {
+        // 「差一点」同样要标出写错的那个字母，只有答错才标红会让最需要提示的情况缺少提示
+        val diffInfo = when (answerResult) {
+            is AnswerResult.Wrong -> answerResult.diffInfo
+            is AnswerResult.AlmostCorrect -> answerResult.diffInfo
+            else -> emptyList()
+        }
+        if (diffInfo.isNotEmpty()) {
             Text(
-                buildDiffText(answerResult.diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
-                style = MaterialTheme.typography.titleLarge.copy(
+                buildDiffText(diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
+                style = MaterialTheme.typography.headlineMedium.copy(
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
+                    letterSpacing = 2.sp,
                 ),
             )
             Spacer(Modifier.height(8.dp))
@@ -427,9 +436,7 @@ private fun SpellingContent(
     }
 
     LaunchedEffect(Unit) {
-        if (idle) {
-            try { focusRequester.requestFocus() } catch (_: Throwable) {}
-        }
+        if (idle) focusRequester.requestFocus()
     }
 }
 
@@ -547,10 +554,12 @@ private fun AudioSpellingContent(
             onValueChange = onInputChange,
             modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
             placeholder = { Text("输入英文单词…") },
-            textStyle = MaterialTheme.typography.titleLarge.copy(
+            // 字号放大到 headlineMedium 并拉开字距，方便逐字母核对自己输入的内容
+            textStyle = MaterialTheme.typography.headlineMedium.copy(
                 fontFamily = FontFamily.Serif,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
+                letterSpacing = 2.sp,
             ),
             singleLine = true,
             enabled = idle,
@@ -572,13 +581,20 @@ private fun AudioSpellingContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
-        if (answerResult is AnswerResult.Wrong && answerResult.diffInfo.isNotEmpty()) {
+        // 「差一点」同样要标出写错的那个字母，只有答错才标红会让最需要提示的情况缺少提示
+        val diffInfo = when (answerResult) {
+            is AnswerResult.Wrong -> answerResult.diffInfo
+            is AnswerResult.AlmostCorrect -> answerResult.diffInfo
+            else -> emptyList()
+        }
+        if (diffInfo.isNotEmpty()) {
             Text(
-                buildDiffText(answerResult.diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
-                style = MaterialTheme.typography.titleLarge.copy(
+                buildDiffText(diffInfo, MaterialTheme.colorScheme.onSurface, MaterialTheme.colorScheme.error),
+                style = MaterialTheme.typography.headlineMedium.copy(
                     fontFamily = FontFamily.Serif,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.Center,
+                    letterSpacing = 2.sp,
                 ),
             )
             Spacer(Modifier.height(8.dp))
@@ -600,8 +616,6 @@ private fun AudioSpellingContent(
     }
 
     LaunchedEffect(Unit) {
-        if (idle) {
-            try { focusRequester.requestFocus() } catch (_: Throwable) {}
-        }
+        if (idle) focusRequester.requestFocus()
     }
 }

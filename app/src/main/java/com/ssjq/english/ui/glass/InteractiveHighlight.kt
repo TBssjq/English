@@ -12,6 +12,9 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.launch
 
 class InteractiveHighlight(
@@ -32,6 +35,17 @@ class InteractiveHighlight(
     private var startPosition = Offset.Zero
     val pressProgress: Float get() = pressProgressAnimation.value
     val offset: Offset get() = positionAnimation.value - startPosition
+
+    /** 触点位置写入收敛到常驻协程，避免每个移动事件创建协程 */
+    private val positionChannel = Channel<Offset>(Channel.CONFLATED)
+
+    init {
+        animationScope.launch {
+            positionChannel.consumeAsFlow().collectLatest { target ->
+                positionAnimation.snapTo(target)
+            }
+        }
+    }
 
     val modifier: Modifier =
         Modifier.drawWithContent {
@@ -68,7 +82,7 @@ class InteractiveHighlight(
                     }
                 }
             ) { change, _ ->
-                animationScope.launch { positionAnimation.snapTo(change.position) }
+                positionChannel.trySend(change.position)
             }
         }
 }

@@ -2,23 +2,21 @@ package com.ssjq.english.data
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.BufferedWriter
-import java.io.FileNotFoundException
-import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
-import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 
 object LibraryFileManager {
 
-    private const val TAG = "Export"
     const val MIME_TYPE_JSON = "application/json"
+    const val SCHEMA_VERSION = 2
 
     fun serializeToJson(data: ExportData): String {
+        require(data.version == SCHEMA_VERSION) { "导出格式版本必须为 $SCHEMA_VERSION" }
         return JSONObject().apply {
             put("version", data.version)
             put("exportTime", data.exportTime)
@@ -36,97 +34,57 @@ object LibraryFileManager {
         }.toString(2)
     }
 
-    fun deserializeFromJson(jsonString: String): ExportData? {
-        return try {
-            val root = JSONObject(jsonString)
-            val version = root.optInt("version", 1)
-            val exportTime = root.optLong("exportTime", System.currentTimeMillis())
-            val scopeName = root.optString("scope", "ALL")
-            val scope = try {
-                ExportScope.valueOf(scopeName)
-            } catch (_: Exception) {
-                ExportScope.ALL
+    fun deserializeFromJson(jsonString: String): ExportData {
+        val root = JSONObject(jsonString)
+        require(root.getInt("version") == SCHEMA_VERSION) {
+            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION"
+        }
+        return ExportData(
+            version = root.getInt("version"),
+            exportTime = root.getLong("exportTime"),
+            scope = ExportScope.valueOf(root.getString("scope")),
+            scopeName = root.getString("scopeName"),
+            contentType = ExportContentType.valueOf(root.getString("contentType")),
+            wrongWords = jsonToEntries(root.getJSONArray("wrongWords")),
+            favorites = jsonToEntries(root.getJSONArray("favorites")),
+            totalDays = root.getInt("totalDays"),
+            currentStreak = root.getInt("currentStreak"),
+            longestStreak = root.getInt("longestStreak"),
+            totalWordsLearned = root.getInt("totalWordsLearned"),
+            totalWordsMastered = root.getInt("totalWordsMastered"),
+            totalMinutes = root.getInt("totalMinutes"),
+        )
+    }
+
+    /** 校验文件结构。版本或必需数组缺失时直接抛出 */
+    fun validateJson(jsonString: String) {
+        val root = JSONObject(jsonString)
+        require(root.getInt("version") == SCHEMA_VERSION) {
+            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION"
+        }
+        root.getJSONArray("wrongWords")
+        root.getJSONArray("favorites")
+    }
+
+    suspend fun writeFile(context: Context, uri: Uri, data: ExportData) {
+        val outputStream = checkNotNull(context.contentResolver.openOutputStream(uri)) {
+            "无法打开导出文件: $uri"
+        }
+        outputStream.use { os ->
+            BufferedWriter(OutputStreamWriter(os, StandardCharsets.UTF_8)).use { writer ->
+                writer.write(serializeToJson(data))
             }
-            val scopeLabel = root.optString("scopeName", "")
-            val contentTypeName = root.optString("contentType", "BOTH")
-            val contentType = try {
-                ExportContentType.valueOf(contentTypeName)
-            } catch (_: Exception) {
-                ExportContentType.BOTH
-            }
-            val wrongWords = jsonToEntries(root.optJSONArray("wrongWords"))
-            val favorites = jsonToEntries(root.optJSONArray("favorites"))
-            val totalDays = root.optInt("totalDays", 0)
-            val currentStreak = root.optInt("currentStreak", 0)
-            val longestStreak = root.optInt("longestStreak", 0)
-            val totalWordsLearned = root.optInt("totalWordsLearned", 0)
-            val totalWordsMastered = root.optInt("totalWordsMastered", 0)
-            val totalMinutes = root.optInt("totalMinutes", 0)
-            ExportData(version, exportTime, scope, scopeLabel, contentType, wrongWords, favorites, totalDays, currentStreak, longestStreak, totalWordsLearned, totalWordsMastered, totalMinutes)
-        } catch (e: Exception) {
-            Log.e(TAG, "deserializeFromJson failed: ${e.message}", e)
-            null
         }
     }
 
-    fun validateJson(jsonString: String): Boolean {
-        return try {
-            val root = JSONObject(jsonString)
-            root.has("version") &&
-                root.has("wrongWords") && root.optJSONArray("wrongWords") != null &&
-                root.has("favorites") && root.optJSONArray("favorites") != null
-        } catch (_: Exception) {
-            false
+    suspend fun readFile(context: Context, uri: Uri): String {
+        val inputStream = checkNotNull(context.contentResolver.openInputStream(uri)) {
+            "无法打开导入文件: $uri"
         }
-    }
-
-    suspend fun writeFile(context: Context, uri: Uri, data: ExportData): Boolean {
-        return try {
-            Log.d(TAG, "writeFile: opening output stream for URI: $uri")
-            val outputStream = context.contentResolver.openOutputStream(uri)
-            if (outputStream == null) {
-                Log.e(TAG, "openOutputStream returned null for URI: $uri")
-                return false
+        return inputStream.use {
+            BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).use { reader ->
+                reader.readText()
             }
-            outputStream.use { os ->
-                BufferedWriter(OutputStreamWriter(os, Charset.forName("UTF-8"))).use { writer ->
-                    val json = serializeToJson(data)
-                    Log.d(TAG, "writeFile: JSON size: ${json.length} chars")
-                    writer.write(json)
-                    writer.flush()
-                    Log.d(TAG, "writeFile: flush completed successfully")
-                }
-            }
-            Log.d(TAG, "writeFile: completed successfully")
-            true
-        } catch (e: FileNotFoundException) {
-            Log.e(TAG, "File not found: ${e.message}", e)
-            false
-        } catch (e: IOException) {
-            Log.e(TAG, "IO error: ${e.message}", e)
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error: ${e.message}", e)
-            false
-        }
-    }
-
-    suspend fun readFile(context: Context, uri: Uri): String? {
-        return try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                BufferedReader(InputStreamReader(inputStream, Charset.forName("UTF-8"))).use { reader ->
-                    reader.readText()
-                }
-            }
-        } catch (e: FileNotFoundException) {
-            Log.e(TAG, "File not found: ${e.message}", e)
-            null
-        } catch (e: IOException) {
-            Log.e(TAG, "IO error: ${e.message}", e)
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error: ${e.message}", e)
-            null
         }
     }
 
@@ -134,9 +92,9 @@ object LibraryFileManager {
         return JSONArray().apply {
             entries.forEach { entry ->
                 put(JSONObject().apply {
-                    put("wordId", entry.wordId ?: "")
-                    put("headWord", entry.headWord ?: "")
-                    put("dbName", entry.dbName ?: "")
+                    put("wordId", entry.wordId)
+                    put("headWord", entry.headWord)
+                    put("dbName", entry.dbName)
                     put("tranCn", entry.tranCn ?: "")
                     put("addedAt", entry.addedAt)
                 })
@@ -144,25 +102,20 @@ object LibraryFileManager {
         }
     }
 
-    private fun jsonToEntries(arr: JSONArray?): List<WordEntry> {
-        if (arr == null) return emptyList()
-        return try {
-            (0 until arr.length()).mapNotNull { i ->
-                try {
-                    val o = arr.getJSONObject(i)
-                    WordEntry(
-                        wordId = o.getString("wordId"),
-                        headWord = o.getString("headWord"),
-                        dbName = o.getString("dbName"),
-                        tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
-                        addedAt = o.optLong("addedAt", System.currentTimeMillis()),
-                    )
-                } catch (_: Exception) {
-                    null
-                }
+    private fun jsonToEntries(arr: JSONArray): List<WordEntry> =
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val wordId = o.getString("wordId")
+            val dbName = o.getString("dbName")
+            require(wordId.isNotBlank() && dbName.isNotBlank()) {
+                "导入记录缺少主键: 第 $i 条"
             }
-        } catch (_: Exception) {
-            emptyList()
+            WordEntry(
+                wordId = wordId,
+                headWord = o.getString("headWord"),
+                dbName = dbName,
+                tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
+                addedAt = o.getLong("addedAt"),
+            )
         }
-    }
 }

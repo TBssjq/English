@@ -1,11 +1,10 @@
 package com.kyant.backdrop.backdrops
 
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -26,9 +25,13 @@ fun rememberLayerBackdrop(
     graphicsLayer: GraphicsLayer = rememberGraphicsLayer(),
     onDraw: ContentDrawScope.() -> Unit = DefaultOnDraw
 ): LayerBackdrop {
-    return remember(graphicsLayer, onDraw) {
+    val backdrop = remember(graphicsLayer, onDraw) {
         LayerBackdrop(graphicsLayer, onDraw)
     }
+    // 主题配色变化会改变背景渐变与光斑，此时必须重新录制采样层
+    val colorScheme = MaterialTheme.colorScheme
+    LaunchedEffect(colorScheme) { backdrop.invalidateBackground() }
+    return backdrop
 }
 
 @Stable
@@ -39,9 +42,21 @@ class LayerBackdrop internal constructor(
 
     override val isCoordinatesDependent: Boolean = true
 
-    internal var layerCoordinates: LayoutCoordinates? by mutableStateOf(null)
+    // 普通字段：坐标只在绘制阶段读取，写入不触发重组
+    internal var layerCoordinates: LayoutCoordinates? = null
+
+    @Volatile
+    internal var backgroundDirty: Boolean = true
+
+    // 由 layerBackdrop 节点在 attach 时设置，用于内容变化时请求重绘
+    internal var requestRedraw: (() -> Unit)? = null
 
     private var inverseLayerScope: InverseLayerScope? = null
+
+    internal fun invalidateBackground() {
+        backgroundDirty = true
+        requestRedraw?.invoke()
+    }
 
     override fun DrawScope.drawBackdrop(
         density: Density,

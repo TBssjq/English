@@ -81,7 +81,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
@@ -111,17 +114,19 @@ fun CheckInScreen(onBack: () -> Unit) {
     // 先给默认值，避免首帧就在主线程解析 SP 里的 JSON（记录多时卡顿）
     var stats by remember { mutableStateOf(CheckInManager.EmptyStats) }
     var recent by remember { mutableStateOf<List<CheckInRecord?>>(emptyList()) }
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     // stats()/recentDays() 都要解析 SP 里的 JSON，统一放到 IO 线程刷新，
     // 并在从其它页面返回时（学习行为会触发自动打卡）重新拉取
     fun refresh() {
         scope.launch {
-            withContext(Dispatchers.IO) {
-                stats = CheckInManager.stats()
-                recent = CheckInManager.recentDays(84)
+            // IO 线程只负责取值，状态回到主线程赋值
+            val snapshot = withContext(Dispatchers.IO) {
+                CheckInManager.stats() to CheckInManager.recentDays(84)
             }
+            stats = snapshot.first
+            recent = snapshot.second
         }
     }
     LaunchedEffect(Unit) { refresh() }
@@ -135,54 +140,13 @@ fun CheckInScreen(onBack: () -> Unit) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(200.dp)
-                    .offset(x = (-50).dp, y = 100.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(160.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 60.dp, y = 220.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .offset(x = 40.dp, y = 500.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = Color.Transparent,
         topBar = {
             LargeTopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text("每日打卡", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -251,7 +215,7 @@ private fun TodayHeroCard(stats: CheckInStats, backdrop: Backdrop) {
     LiquidGlassCard(
         backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(28.dp),
+        shape = GlassShapes.Panel,
         blurRadius = 10.dp,
         lensHeight = 16.dp,
         lensAmount = 28.dp,
@@ -406,7 +370,7 @@ private fun StatMiniCard(
     LiquidGlassCard(
         backdrop = backdrop,
         modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
+        shape = GlassShapes.Card,
         blurRadius = 5.dp,
         lensHeight = 8.dp,
         lensAmount = 14.dp,
@@ -449,7 +413,7 @@ private fun ContributionHeatmap(records: List<CheckInRecord?>, backdrop: Backdro
     // 热力图不使用液态玻璃，使用普通 Surface 以保证清晰可读
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(24.dp),
+        shape = GlassShapes.Card,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
         tonalElevation = 2.dp,
         shadowElevation = 6.dp,
@@ -567,7 +531,7 @@ private fun AchievementBadges(stats: CheckInStats, backdrop: Backdrop) {
     LiquidGlassCard(
         backdrop = backdrop,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(24.dp),
+        shape = GlassShapes.Card,
         blurRadius = 6.dp,
         lensHeight = 10.dp,
         lensAmount = 18.dp,
@@ -712,10 +676,9 @@ private fun BadgeItem(modifier: Modifier = Modifier, achievement: Achievement) {
 private fun RecentRecordItem(record: CheckInRecord, backdrop: Backdrop) {
     val dateFmt = remember { SimpleDateFormat("MM-dd EEE", Locale.getDefault()) }
     val date = remember(record.date) {
-        runCatching {
-            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            dateFmt.format(sdf.parse(record.date) ?: Date())
-        }.getOrDefault(record.date)
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val parsed = checkNotNull(sdf.parse(record.date)) { "打卡日期格式错误: ${record.date}" }
+        dateFmt.format(parsed)
     }
     LiquidGlassListItem(
         backdrop = backdrop,

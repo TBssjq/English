@@ -17,6 +17,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowInsetsControllerCompat
 import com.ssjq.english.data.UserManager
+import com.ssjq.english.ui.glass.LocalGlassPalette
+import com.ssjq.english.ui.glass.currentGlassPalette
 import java.util.Calendar
 
 /**
@@ -133,12 +135,15 @@ fun EnglishTheme(
         }
     }
 
-    CompositionLocalProvider(LocalExtendedColors provides extendedColors) {
-        MaterialTheme(
-            colorScheme = colorScheme,
-            typography = AppTypography,
-            shapes = AppShapes,
-            content = content
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = AppTypography,
+        shapes = AppShapes,
+    ) {
+        CompositionLocalProvider(
+            LocalExtendedColors provides extendedColors,
+            LocalGlassPalette provides currentGlassPalette(),
+            content = content,
         )
     }
 }

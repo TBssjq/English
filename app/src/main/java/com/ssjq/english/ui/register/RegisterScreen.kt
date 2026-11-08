@@ -45,6 +45,7 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.UserManager
+import com.ssjq.english.ui.glass.GlassShapes
 import com.ssjq.english.ui.glass.LiquidButton
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassListItem
@@ -201,7 +202,7 @@ private fun UsernameStep(
                 modifier = Modifier.fillMaxWidth().padding(12.dp),
                 placeholder = { Text("输入用户名") },
                 textStyle = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-                shape = RoundedCornerShape(16.dp),
+                shape = GlassShapes.Item,
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Color.Transparent,
                     unfocusedContainerColor = Color.Transparent,
@@ -273,7 +274,7 @@ private fun PickBookStep(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 placeholder = { Text("搜索词库…") },
                 singleLine = true,
-                shape = RoundedCornerShape(28.dp),
+                shape = GlassShapes.Panel,
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = Color.Transparent,
                     unfocusedContainerColor = Color.Transparent,

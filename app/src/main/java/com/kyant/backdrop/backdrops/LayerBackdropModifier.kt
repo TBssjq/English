@@ -3,7 +3,6 @@ package com.kyant.backdrop.backdrops
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
@@ -24,6 +23,7 @@ private class LayerBackdropElement(
 
     override fun update(node: LayerBackdropNode) {
         node.backdrop = backdrop
+        backdrop.invalidateBackground()
         node.invalidateDraw()
     }
 
@@ -35,15 +35,10 @@ private class LayerBackdropElement(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is LayerBackdropElement) return false
-
-        if (backdrop != other.backdrop) return false
-
-        return true
+        return backdrop == other.backdrop
     }
 
-    override fun hashCode(): Int {
-        return backdrop.hashCode()
-    }
+    override fun hashCode(): Int = backdrop.hashCode()
 }
 
 private class LayerBackdropNode(
@@ -52,30 +47,39 @@ private class LayerBackdropNode(
 
     override val shouldAutoInvalidate: Boolean = false
 
+    private var lastWidth = -1
+    private var lastHeight = -1
+
     override fun ContentDrawScope.draw() {
         drawContent()
-        recordLayer(backdrop.graphicsLayer) { backdrop.onDraw(this@draw) }
-    }
-
-    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
-        if (coordinates.isAttached) {
-            // 仅在窗口位置发生"有意义"的变化时才写状态。
-            // 原因：LayoutCoordinates 每次布局都是新对象，无条件赋值会触发重组，
-            // 重组又触发布局回调，形成同步无限递归 → StackOverflowError。
-            // 这里用 0.5px 阈值，避免亚像素抖动（浮点误差）造成位置"永远在变"。
-            val current = backdrop.layerCoordinates
-            if (current == null || positionMoved(current, coordinates)) {
-                backdrop.layerCoordinates = coordinates
-            }
+        // 背景是静态渐变与光斑，仅在尺寸、主题或内容参数变化时重新录制
+        if (backdrop.backgroundDirty) {
+            recordLayer(backdrop.graphicsLayer) { backdrop.onDraw(this@draw) }
+            backdrop.backgroundDirty = false
         }
     }
 
-    private fun positionMoved(old: LayoutCoordinates, new: LayoutCoordinates): Boolean {
-        val delta = old.positionInWindow() - new.positionInWindow()
-        return kotlin.math.abs(delta.x) > 0.5f || kotlin.math.abs(delta.y) > 0.5f
+    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        if (!coordinates.isAttached) return
+        val size = coordinates.size
+        if (size.width != lastWidth || size.height != lastHeight) {
+            lastWidth = size.width
+            lastHeight = size.height
+            backdrop.invalidateBackground()
+            invalidateDraw()
+        }
+        backdrop.layerCoordinates = coordinates
+    }
+
+    override fun onAttach() {
+        backdrop.requestRedraw = { invalidateDraw() }
+        backdrop.invalidateBackground()
+        lastWidth = -1
+        lastHeight = -1
     }
 
     override fun onDetach() {
         backdrop.layerCoordinates = null
+        backdrop.requestRedraw = null
     }
 }

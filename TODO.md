@@ -47,10 +47,32 @@ maven {
 `Shadow.alpha` 会与 `color` 自带 alpha 相乘。写 `Shadow(radius=12.dp, alpha=0.15f)` 实际只有 0.1×0.15=0.015，阴影几乎不可见。
 **统一用 `glassShadow(radius, alpha)` / `glassInnerShadow(radius, alpha)` 辅助函数**（在 `LiquidGlass.kt`，内部走 `color` 控制浓度）。
 
-### 5. 性能红线
+### 5. 顶栏玻璃只能通过 Material3 顶栏的 `modifier` 叠加
+`TopAppBar` / `LargeTopAppBar` 把调用方传入的 `modifier` 放在最外层 `Box` 上，状态栏 `windowInsetsPadding`
+与折叠偏移都在内层处理。因此 `Modifier.glassTopBar(backdrop)` 能覆盖整条顶栏（含状态栏区域与折叠动画），
+同时保留滚动折叠、insets 与无障碍语义。
+
+**禁止**：① 用自绘顶栏替换 M3 顶栏；② 在外面套 `Box` 再叠玻璃（会与 M3 内部 insets 重复计算）；
+③ 去掉 `glassTopBar` 里的 `remember`——页面重组会新建 modifier，`DrawBackdropNode` 判定变更后
+会重新录制背景采样，输入框逐字输入这类高频重组会明显掉帧。
+
+顶栏容器色必须配套 `glassTopBarColors()`（透明），否则 M3 默认的 `surface` 会把玻璃盖住。
+
+### 6. 玻璃特效开关与低端设备降级
+`GlassQuality`（`ui/glass/GlassSpec.kt`）里 `effectsOn` 是 **Compose 状态**，不是普通字段：
+`drawBackdrop` 在 `observeReads` 内执行 effects 块，状态变化会直接触发对应节点重建效果链，
+不需要重组整棵页面树。关掉开关后 `lensEnabled` / `vibrancyEnabled` 为 false，模糊降到一半。
+
+`lowRam`（`ActivityManager.isLowRamDevice` 或堆上限 < 256 MB）在 `MainActivity` 里配置一次；
+用户偏好存在 `UserManager`，`MainActivity` 启动时同步给 `GlassQuality`，首页设置条切换时两处一起写。
+
+### 7. 性能红线
 - 每个 `drawBackdrop` 会创建 1 个 GraphicsLayer；`shadow`、`highlight`、`innerShadow` **各自再创建 1 个**。
 - 一个满配玻璃列表项 = 3~4 个 GraphicsLayer，滚动时会明显掉帧。
-- 因此 `LiquidGlassListItem`（列表项）刻意关闭 lens/vibrancy 且不带 shadow，**不要给它加回满配**。
+- 因此列表项与分类标题必须用 `LiquidGlassListItem`（半透明磨砂 + 描边，完全不走 backdrop 采样），
+  **不要给它加回满配**。
+- 页面级玻璃（卡片、按钮、顶栏、底栏）统一采样 `LocalAppBackdrop`，全应用只有一份全屏采样层；
+  各页面不要自己 `rememberLayerBackdrop()` 再录制全屏（会导致嵌套采样递归，栈溢出崩溃）。
 - `lens()` 走 AGSL RuntimeShader（需 Android 13+），`blur()` 需 Android 12+，低版本库内部自动降级。
 
 ---
@@ -58,9 +80,9 @@ maven {
 ## 二、已完成
 
 - [x] backdrop 源码集成 + 全链路编译（debug / release 均通过，含 R8）
-- [x] 11 个页面全部接入 `rememberLayerBackdrop()` 采样源
-- [x] 玻璃组件库 `ui/common/LiquidGlass.kt`：`LiquidGlassCard / ListItem / Button / SearchBar / Badge / DialogSurface / Dialog / TopAppBar / BottomBar / Toast / BottomNavigation`
-- [x] 修复 Shadow/InnerShadow 的 alpha 误用（阴影此前几乎不可见）
+- [x] 玻璃组件库 `ui/common/LiquidGlass.kt`：`LiquidGlassCard / ListItem / SearchBar / Badge / DialogSurface / Dialog / Toast / BottomBar / BottomNavigation`
+- [x] 新玻璃组件 `ui/glass/`：`LiquidCard / LiquidButton / LiquidToggle / LiquidBottomTabs`，配色与形状集中在 `GlassSpec.kt`
+- [x] 修复 Shadow/InnerShadow 的 alpha 误用（阴影此前几乎不可见，共 36 处）
 - [x] 修复 `FancyToast` 重复代码 + alpha 误用；未接入 backdrop 时自动降级纯色
 - [x] **底部导航栏**（学习 / 成就 / 关于作者），悬浮胶囊玻璃，选中项叠加更厚玻璃胶囊
 - [x] 玻璃效果"夸张化"：饱和度 1.8~2.1、blur 提升、启用 `depthEffect` + `chromaticAberration`（色散彩边）
@@ -72,7 +94,19 @@ maven {
 - [x] **主界面简化**：选定词库后首屏只呈现「当前词库」面板，不再罗列全部分类
 - [x] **更换词库**：提供「更换词库 / 浏览全部」入口，点击任意词库即切换当前词库
 - [x] **老用户兼容**：`getCurrentBook()` 为空时回退完整分类树，升级后不白屏
-- [x] **批量修复 36 处 Shadow/InnerShadow 误用**（此前阴影实际透明度仅 0.01~0.025，几乎不可见）
+- [x] 全局背景层统一：`AppNav` 提供唯一采样源（渐变 + 三个光斑），光斑参数集中在 `GlassBackdropSpec`
+- [x] **顶部栏玻璃化**：9 个页面（首页 / 词库 / 详情 / 搜索 / 测验 / 疯狂刷题 / 打卡 / 错题本 / 关于）统一 `Modifier.glassTopBar`
+- [x] **详情页底部操作栏玻璃化**：不透明 `Surface` 换成 `LiquidGlassBottomBar`（悬浮圆角）
+- [x] **玻璃特效总开关**：首页设置条可关闭折射与色散，配合低端设备自动降级
+- [x] **列表项轻量化**：分类标题、子分类、词库、搜索结果改用 `LiquidGlassListItem`
+- [x] **间隔重复复习**：`ReviewScheduler`（答对升级 / 模糊降级 / 不认识归零，间隔 `2^level` 天），首页「今日待复习 N 词」进入到期单词
+- [x] 发音播放抽为 `service/PronunciationPlayer`，播放结束/出错清空引用
+- [x] 词库读取改为快速失败（`check` 断言），不再静默返回 0 条 / 空列表
+- [x] **测验答错即时写入错题本**（`QuizScreen` 监听 `answerResult`），中途退出不再丢题；答错反馈卡新增「查看单词」
+- [x] **拼写纠错对齐**：输入框与纠错文本放大；改为最长公共子序列对齐，多写/写错一个字母只标那一处，「差一点」也标红
+- [x] **自动发音开关跨轮次保留**（`UserLibrary.autoPlayAudioEnabled`）
+- [x] 查词弹窗在没有音标数据时同样提供英音 / 美音
+- [x] 单元测试：`ReviewSchedulerTest`、`LibraryCatalogTest`、`AppUpdateManagerTest`、`QuizEngineTest`
 
 ### 手势语义（WordDetailScreen，已重排，勿回退）
 | 手势 | 行为 |
@@ -86,25 +120,13 @@ maven {
 
 ---
 
-## 三、待办（按优先级）
-
-### P1 顶部栏玻璃化
-已提供 `LiquidGlassTopAppBar`，但各页面仍用 M3 `LargeTopAppBar`/`TopAppBar`。
-要点：M3 顶栏承载 `scrollBehavior`（折叠/吸顶）与 insets，直接替换风险高。建议做法是保留 M3 TopAppBar，将其 `containerColor` 设为透明，并在其下方叠一层玻璃背景，逐步替换、逐页验证滚动行为。
-
-### P1 详情页底部操作栏玻璃化
-`WordDetailScreen` 底部是 M3 `Surface`（约 645 行），可替换为 `LiquidGlassBottomBar`。
-
-### P2 性能与体验
-- [ ] 低端设备降级：根据 `ActivityManager.isLowRamDevice()` 或设备性能分级，关闭 `lens`/`chromaticAberration`。
-- [ ] 玻璃效果总开关（设置项），让用户可关。
-- [ ] 底栏的 `layerBackdrop` 会录制全屏内容，滚动时持续离屏渲染；若低端机掉帧，可考虑底栏改用静态磨砂（不采样）。
-- [ ] `HomeScreen` 分类标题在 `forEach` 中用满配 `LiquidGlassCard`，数量多时可降级为 `LiquidGlassListItem`。
+## 三、待办
 
 ### P2 视觉与一致性
-- [ ] 统一各页面背景层（渐变 + 光斑）的配色与布局，目前 11 个页面各自实现，存在细微差异。
-- [ ] 校验深色模式下所有玻璃组件的文字对比度（玻璃上的 `onXxxContainer` 颜色可能需要调整）。
-- [ ] 补充"关于作者"页内容（当前为原 AboutScreen）。
+- [x] 已核对 `Color.kt` 里明暗两套配色的文字对比度：正文与容器组合全部 ≥ 4.5:1（最低 5.17，亮色 `onPrimary/primary`），`outline` 只用于描边，4.36 ≥ 3:1 的图形组件要求
+- [x] 「关于作者」页包含用户名、作者介绍、版本信息与检查更新、最新公告、QQ / GitHub / 邮箱联系方式
+
+代码与文档层面无未完成的必须项。剩余事项依赖外部凭据：v2.2 签名 APK 需用 release keystore 生成后上传 GitHub Release，再把网站 `version/english.json` 的版本号与下载地址切换过去，否则客户端下载会得到 404。
 
 ---
 
@@ -112,7 +134,8 @@ maven {
 
 ```powershell
 .\gradlew.bat :app:compileDebugKotlin            # 快速验证编译
+.\gradlew.bat :app:testDebugUnitTest             # 全部单元测试
 .\gradlew.bat :app:assembleDebug :app:assembleRelease   # 完整验证（含 R8）
 ```
 
-改动玻璃相关代码后务必跑 release，确认 R8 未误删 backdrop 的类。
+改动玻璃相关代码后务必跑 release，确认 R8 未误删 backdrop 的类。分层结构、核心流程与发布步骤见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。

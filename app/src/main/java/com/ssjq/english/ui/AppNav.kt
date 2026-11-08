@@ -26,6 +26,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.ssjq.english.ui.glass.GlassBackdropSpec
+import com.ssjq.english.ui.glass.LocalAppBackdrop
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,13 +58,14 @@ import com.ssjq.english.data.UserManager
 import com.ssjq.english.quiz.QuizScreen
 import com.ssjq.english.ui.about.AboutScreen
 import com.ssjq.english.ui.checkin.CheckInScreen
+import com.ssjq.english.ui.common.GlassDialogBody
 import com.ssjq.english.ui.common.GlassDialogHost
 import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.ui.glass.LiquidBottomTab
 import com.ssjq.english.ui.glass.LiquidBottomTabs
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.EmojiEvents
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -93,7 +98,7 @@ import kotlinx.coroutines.withContext
  * 不依赖 Navigation 3，避免新库版本/API 不稳定导致的编译问题。
  */
 private fun MainTab.glassIcon(): ImageVector = when (this) {
-    MainTab.STUDY -> Icons.Filled.MenuBook
+    MainTab.STUDY -> Icons.AutoMirrored.Filled.MenuBook
     MainTab.ACHIEVEMENT -> Icons.Filled.EmojiEvents
     MainTab.ABOUT -> Icons.Filled.Person
 }
@@ -109,7 +114,7 @@ fun AppNav() {
     // 返回栈：栈底为当前页签的根页面，栈顶为当前显示页。
     // 栈内只有 1 个元素时处于顶层，此时显示底部导航栏。
     val backStack = remember { mutableStateListOf<Any>(Home) }
-    var currentTab by remember { mutableStateOf(MainTab.STUDY) }
+    var currentTab by rememberSaveable { mutableStateOf(MainTab.STUDY) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -129,6 +134,7 @@ fun AppNav() {
 
     var showNoticeDialog by remember { mutableStateOf(false) }
     var latestNotice by remember { mutableStateOf<NoticeData?>(null) }
+    var pendingNotice by remember { mutableStateOf<NoticeData?>(null) }
 
     // 启动时并发检查更新和拉取公告
     LaunchedEffect(Unit) {
@@ -143,24 +149,29 @@ fun AppNav() {
         }
 
         val noticeJob = scope.launch(Dispatchers.IO) {
-            // 仅首次进入强制拉取并展示公告，之后不再强制弹出
-            if (!UserManager.hasSeenAnnouncement()) {
-                val (notice, result) = AppUpdateManager.fetchNotice()
-                // 网络失败不标记为已读，下次进入仍会重试；解析不出内容也不弹空对话框
-                if (result != NoticeResult.NETWORK_ERROR) {
-                    UserManager.markAnnouncementSeen()
-                }
-                if (result == NoticeResult.HAS_NOTICE && notice != null && notice.hasContent()) {
-                    withContext(Dispatchers.Main) {
-                        latestNotice = notice
-                        showNoticeDialog = true
-                    }
+            // 每次启动都拉一次：同一条公告只弹一次，服务端换了公告就再弹一次。
+            // 旧实现只判断「是否弹过」，作者后来发布的新公告老用户永远收不到
+            val (notice, result) = AppUpdateManager.fetchNotice()
+            if (result == NoticeResult.HAS_NOTICE && notice != null && notice.hasContent()) {
+                if (UserManager.announcementSeenKey() != notice.seenKey()) {
+                    withContext(Dispatchers.Main) { pendingNotice = notice }
                 }
             }
         }
 
         updateJob.join()
         noticeJob.join()
+    }
+
+    // 公告与更新弹窗排队显示：升级首启时两者会同时到达，
+    // 直接各弹一个会叠在一起，底下的那个既看不见又抢走返回键
+    LaunchedEffect(pendingNotice, showUpdateDialog) {
+        val notice = pendingNotice ?: return@LaunchedEffect
+        if (showUpdateDialog) return@LaunchedEffect
+        latestNotice = notice
+        showNoticeDialog = true
+        pendingNotice = null
+        UserManager.setAnnouncementSeenKey(notice.seenKey())
     }
 
     // 每次重组重新计算：栈内只有根页面时处于顶层
@@ -214,7 +225,11 @@ fun AppNav() {
 
     fun openDownload() {
         val v = latestVersion ?: return
-        AppUpdateManager.openDownloadUrl(context, v)
+        // 打不开就保持弹窗并给出提示：原来的写法无条件关弹窗，链接异常时用户毫无反馈
+        if (!AppUpdateManager.openDownloadUrl(context, v)) {
+            Toast.makeText(context, "下载地址无效，请稍后重试", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!(v.forceUpdate)) {
             showUpdateDialog = false
         }
@@ -222,7 +237,10 @@ fun AppNav() {
 
     fun openNoticeUrl() {
         val n = latestNotice ?: return
-        AppUpdateManager.openUrl(context, n.url)
+        if (!AppUpdateManager.openUrl(context, n.url)) {
+            Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!n.isForce) {
             showNoticeDialog = false
         }
@@ -235,6 +253,12 @@ fun AppNav() {
     // 学习进度、答题状态全部丢失。
     var lastBackPressAt by remember { mutableStateOf(0L) }
     BackHandler(enabled = backStack.size <= 1) {
+        // 停留在「成就」或「关于」页签时，返回键先回到「学习」页签，
+        // 而不是直接进入退出确认，与系统返回的分层习惯一致
+        if (currentTab != MainTab.STUDY) {
+            selectTab(MainTab.STUDY)
+            return@BackHandler
+        }
         val now = SystemClock.uptimeMillis()
         if (now - lastBackPressAt < 2000) {
             (context as? Activity)?.finish()
@@ -244,8 +268,9 @@ fun AppNav() {
         }
     }
 
-    // 全局背景采样源：底栏与弹窗统一采样这一层固定背景。
+    // 全应用唯一的背景采样源：所有页面、底栏与弹窗共用这一层固定背景。
     val appBackdrop = rememberLayerBackdrop()
+    val blobAlphas = GlassBackdropSpec.blobAlphas()
 
     Box(modifier = Modifier.fillMaxSize()) {
         // 全局玻璃采样源：固定背景层（渐变 + 彩色光斑）。
@@ -274,32 +299,33 @@ fun AppNav() {
             )
             Box(
                 Modifier
-                    .size(240.dp)
+                    .size(GlassBackdropSpec.blobSizes[0])
                     .align(Alignment.TopStart)
                     .offset(x = (-50).dp, y = 60.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.40f)),
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = blobAlphas[0])),
             )
             Box(
                 Modifier
-                    .size(180.dp)
+                    .size(GlassBackdropSpec.blobSizes[1])
                     .align(Alignment.TopEnd)
                     .offset(x = 60.dp, y = 200.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.38f)),
+                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = blobAlphas[1])),
             )
             Box(
                 Modifier
-                    .size(150.dp)
+                    .size(GlassBackdropSpec.blobSizes[2])
                     .align(Alignment.BottomStart)
                     .offset(x = 40.dp, y = (-180).dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.32f)),
+                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = blobAlphas[2])),
             )
         }
 
-        // 内容区：位于背景层之上，且【不被 appBackdrop 录制】，切断嵌套递归。
+        // 内容区：所有页面共用同一个背景采样层，各页面不再各自录制全屏背景。
         Box(modifier = Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalAppBackdrop provides appBackdrop) {
         AnimatedContent(
             targetState = current,
             // 顶层页面为悬浮式底部导航栏预留空间，避免内容被遮挡
@@ -322,7 +348,11 @@ fun AppNav() {
                 },
                 onOpenCheckIn = { selectTab(MainTab.ACHIEVEMENT) },
                 onOpenAbout = { selectTab(MainTab.ABOUT) },
-                onOpenCrazyQuiz = { navigate(CrazyQuizRoute("crazy", com.ssjq.english.ui.nav.CrazyQuizSource.LIBRARY, 0)) },
+                onOpenCrazyQuiz = { navigate(CrazyQuizRoute) },
+                onStartReview = { reviewDb, wordIds ->
+                    navigate(WordStudyRoute(reviewDb, reviewQueue = wordIds))
+                },
+                onStartStudy = { studyDb -> navigate(WordStudyRoute(studyDb)) },
             )
 
             is CheckInRoute -> CheckInScreen(onBack = { back() })
@@ -351,7 +381,11 @@ fun AppNav() {
             is WordStudyRoute -> WordStudyScreen(
                 dbName = route.dbName,
                 startWordId = route.startWordId,
+                reviewQueue = route.reviewQueue,
                 onBack = { back() },
+                onNavigateToWord = { targetDb, targetWordId ->
+                    navigate(WordStudyRoute(targetDb, startWordId = targetWordId))
+                },
             )
 
             is LibraryRoute -> LibraryScreen(
@@ -373,6 +407,7 @@ fun AppNav() {
                 mode = route.mode,
                 sourceWords = route.sourceWords,
                 onBack = { back() },
+                onOpenWord = { wordDb, wordId -> navigate(WordDetailRoute(wordDb, wordId)) },
             )
 
             is CrazyQuizRoute -> CrazyQuizScreen(
@@ -383,7 +418,8 @@ fun AppNav() {
             )
         }
         }   // AnimatedContent 结束
-        }   // 内容区（backdrop 采样源）结束：底栏与弹窗必须在此之外
+        }   // CompositionLocalProvider 结束
+        }   // 内容区结束：底栏与弹窗必须在此之外
 
         // 悬浮式液态玻璃底部导航栏（直接采用库提供的 LiquidBottomTabs）：仅在顶层页面显示。
         // 玻璃弹窗是同窗口覆盖层，底栏在其之后绘制会盖住遮罩，因此弹窗可见时临时隐藏底栏。
@@ -436,10 +472,7 @@ fun AppNav() {
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    v.changelog.ifBlank { "新版本已发布，立即体验！" },
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
                 Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     if (!v.forceUpdate) {
@@ -470,10 +503,7 @@ fun AppNav() {
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    n.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                GlassDialogBody(n.content)
                 Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     if (!n.isForce) {

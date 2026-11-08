@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -36,6 +37,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,11 +55,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.ssjq.english.data.CheckInManager
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 fun modeFromString(mode: String?): QuizMode? = when (mode) {
     "EnSelectCn" -> QuizMode.EnSelectCn
@@ -84,6 +90,8 @@ fun QuizScreen(
     mode: String? = null,
     sourceWords: List<WordDetail> = emptyList(),
     onBack: () -> Unit,
+    /** 从结果页打开某个单词的卡片：参数为词库名与 wordId */
+    onOpenWord: (String, String) -> Unit,
 ) {
     val context = LocalContext.current
     val fixedMode = remember(mode) { modeFromString(mode) }
@@ -106,7 +114,8 @@ fun QuizScreen(
             sourceWords = sourceWords,
             questionCount = questionCount,
             fixedMode = fixedMode,
-            autoPlayAudio = false,
+            // 自动发音是用户偏好，跨轮次保留
+            autoPlayAudio = UserLibrary.autoPlayAudioEnabled(),
         )
     }
 
@@ -119,8 +128,24 @@ fun QuizScreen(
 
     val uiState = state.uiState
     var favoriteToggle by remember { mutableStateOf(0) }
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 答过题后退出需要确认，避免误触丢失本轮进度
+    var showExitConfirm by remember { mutableStateOf(false) }
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
+
+    // 每次答错就地写入错题本：整轮结束才批量写入的旧做法，遇到中途退出、
+    // 结果页之前杀进程，这一轮的错题就全丢了
+    LaunchedEffect(uiState.answerResult, uiState.currentIndex) {
+        if (uiState.answerResult !is AnswerResult.Wrong) return@LaunchedEffect
+        val word = uiState.currentQuestion?.word ?: return@LaunchedEffect
+        val entry = WordEntry(
+            wordId = word.wordId,
+            headWord = word.headWord,
+            dbName = word.dbName ?: dbName,
+            tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
+        )
+        withContext(Dispatchers.IO) { UserLibrary.addWrong(entry) }
+    }
 
     // 测验完成时自动打卡：答对数 + 总题数 + 学过的单词数。
     // consumeFinishReport() 是一次性哨兵，保证同一轮结果只上报一次
@@ -129,76 +154,50 @@ fun QuizScreen(
         val report = state.consumeFinishReport() ?: return@LaunchedEffect
         // 整段放到 IO：accumulate() 会把全部打卡记录 JSON 反序列化再写回，
         // saveQuizRecord() 也会解析/序列化刷题记录，记录较多时在主线程会造成卡顿
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             CheckInManager.accumulate(
                 addQuizCorrect = report.correctCount,
                 addQuizTotal = report.totalQuestions,
                 addWordsLearned = report.totalQuestions,
             )
             // 保存刷题记录
+            val accuracy = if (report.totalQuestions > 0) {
+                (report.correctCount.toDouble() / report.totalQuestions * 100).toInt()
+            } else {
+                0
+            }
             val record = org.json.JSONObject().apply {
                 put("timestamp", System.currentTimeMillis())
                 put("dbName", dbName)
                 put("totalQuestions", report.totalQuestions)
                 put("correctCount", report.correctCount)
-                put("accuracy", (report.correctCount.toDouble() / report.totalQuestions * 100).toInt())
+                put("accuracy", accuracy)
             }.toString()
             com.ssjq.english.data.UserManager.saveQuizRecord(record)
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑（玻璃折射采样源）
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .offset(x = (-40).dp, y = 120.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 50.dp, y = 250.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(120.dp)
-                    .offset(x = 30.dp, y = 500.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text("快速测验", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            val hasProgress = uiState.currentIndex > 0 ||
+                                uiState.answerResult !is AnswerResult.Idle
+                            if (!uiState.isFinished && hasProgress) {
+                                showExitConfirm = true
+                            } else {
+                                onBack()
+                            }
+                        },
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                     }
                 },
@@ -206,7 +205,9 @@ fun QuizScreen(
                     // 自动播放发音开关
                     IconButton(
                         onClick = {
-                            state.setAutoPlayAudioEnabled(!state.autoPlayAudio)
+                            val enabled = !state.autoPlayAudio
+                            state.setAutoPlayAudioEnabled(enabled)
+                            UserLibrary.setAutoPlayAudio(enabled)
                         },
                     ) {
                         Icon(
@@ -219,14 +220,17 @@ fun QuizScreen(
                     IconButton(
                         onClick = {
                             val word = uiState.currentQuestion?.word ?: return@IconButton
+                            // 疯狂刷题会混合多个词库出题，路由里的 dbName 只是占位符；
+                            // 错题/收藏必须写回单词真实所属词库
+                            val ownerDb = word.dbName ?: dbName
                             val entry = WordEntry(
                                 wordId = word.wordId,
                                 headWord = word.headWord,
-                                dbName = dbName,
+                                dbName = ownerDb,
                                 tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
                             )
-                            if (UserLibrary.isFavorite(dbName, word.wordId)) {
-                                UserLibrary.removeFavorite(dbName, word.wordId)
+                            if (UserLibrary.isFavorite(ownerDb, word.wordId)) {
+                                UserLibrary.removeFavorite(ownerDb, word.wordId)
                             } else {
                                 UserLibrary.addFavorite(entry)
                             }
@@ -235,7 +239,9 @@ fun QuizScreen(
                         modifier = Modifier.padding(end = 8.dp),
                     ) {
                         val isFav = remember(favoriteToggle, uiState.currentQuestion) {
-                            uiState.currentQuestion?.word?.let { UserLibrary.isFavorite(dbName, it.wordId) } ?: false
+                            uiState.currentQuestion?.word?.let {
+                                UserLibrary.isFavorite(it.dbName ?: dbName, it.wordId)
+                            } ?: false
                         }
                         Icon(
                             if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
@@ -282,6 +288,8 @@ fun QuizScreen(
                 // 用去重后的数量：小题库会循环出词，同一词可能被错多次，
                 // 否则结果页「错题回顾(N)」的数字会大于实际回顾题量
                 wrongWords = state.distinctWrongCount(),
+                wrongWordList = uiState.wrongWords.distinct(),
+                onOpenWord = { word -> onOpenWord(word.dbName ?: dbName, word.wordId) },
                 modeStats = uiState.modeStats,
                 onRestart = { state.dispatch(QuizIntent.Restart) },
                 onReviewWrong = { state.dispatch(QuizIntent.ReviewWrong) },
@@ -316,7 +324,7 @@ fun QuizScreen(
                 ) {
                     uiState.currentQuestion?.let { question ->
                         AnimatedContent(
-                            targetState = question.id,
+                            targetState = question,
                             transitionSpec = {
                                 slideInHorizontally(
                                     initialOffsetX = { it / 3 },
@@ -329,9 +337,11 @@ fun QuizScreen(
                             },
                             label = "questionSlide",
                             modifier = Modifier.fillMaxSize(),
-                        ) { _ ->
+                        ) { targetQuestion ->
+                            // 使用 targetState 快照：过渡期间旧槽位必须显示旧题，
+                            // 否则退出动画里内容会被新题覆盖
                             QuizModeContent(
-                                question = question,
+                                question = targetQuestion,
                                 answerResult = uiState.answerResult,
                                 spellingInput = uiState.spellingInput,
                                 onSelectOption = { state.dispatch(QuizIntent.SelectOption(it)) },
@@ -350,10 +360,38 @@ fun QuizScreen(
                     correctAnswer = uiState.currentQuestion?.correctAnswer ?: "",
                     exampleSentence = uiState.currentQuestion?.word?.sentences?.firstOrNull()?.content,
                     onNext = { state.dispatch(QuizIntent.NextQuestion) },
+                    // 答错时就地进入该单词的卡片，不必等到结果页
+                    onOpenWord = {
+                        uiState.currentQuestion?.word?.let { word ->
+                            onOpenWord(word.dbName ?: dbName, word.wordId)
+                        }
+                    },
                     backdrop = liquidBackdrop,
                 )
             }
         }
     }
+        if (showExitConfirm) {
+            AlertDialog(
+                onDismissRequest = { showExitConfirm = false },
+                title = { Text("退出测验") },
+                text = { Text("当前进度不会保存，确定退出？") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showExitConfirm = false
+                            onBack()
+                        }
+                    ) {
+                        Text("退出")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExitConfirm = false }) {
+                        Text("继续答题")
+                    }
+                },
+            )
+        }
     } // end of Box (liquid glass background)
 }

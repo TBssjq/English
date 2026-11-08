@@ -1,6 +1,7 @@
 package com.ssjq.english.data
 
 import android.content.Context
+import androidx.core.content.edit
 import android.content.SharedPreferences
 import org.json.JSONArray
 import org.json.JSONObject
@@ -116,32 +117,22 @@ object CheckInManager {
     fun allRecords(): List<CheckInRecord> {
         ensureInit()
         val raw = prefs.getString(KEY_RECORDS, null) ?: return emptyList()
-        return try {
-            val arr = JSONArray(raw)
-            // 单条记录损坏时只跳过该条，绝不能让整个数组解析失败后返回空列表，
-            // 否则 accumulate() 会基于空列表重建并写回，把用户全部历史打卡覆盖清零。
-            (0 until arr.length()).mapNotNull { i ->
-                try {
-                    val o = arr.getJSONObject(i)
-                    val date = o.optString("date", "")
-                    if (date.isBlank()) return@mapNotNull null
-                    CheckInRecord(
-                        date = date,
-                        studyMinutes = o.optInt("studyMinutes", 0),
-                        wordsLearned = o.optInt("wordsLearned", 0),
-                        wordsMastered = o.optInt("wordsMastered", 0),
-                        quizCorrect = o.optInt("quizCorrect", 0),
-                        quizTotal = o.optInt("quizTotal", 0),
-                        checkedAt = o.optLong("checkedAt", System.currentTimeMillis()),
-                        updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
-                    )
-                } catch (_: Exception) {
-                    null
-                }
-            }.sortedBy { it.date }
-        } catch (_: Exception) {
-            emptyList()
-        }
+        val arr = JSONArray(raw)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val date = o.getString("date")
+            require(date.isNotBlank()) { "打卡记录缺少日期: 第 $i 条" }
+            CheckInRecord(
+                date = date,
+                studyMinutes = o.optInt("studyMinutes", 0),
+                wordsLearned = o.optInt("wordsLearned", 0),
+                wordsMastered = o.optInt("wordsMastered", 0),
+                quizCorrect = o.optInt("quizCorrect", 0),
+                quizTotal = o.optInt("quizTotal", 0),
+                checkedAt = o.optLong("checkedAt", System.currentTimeMillis()),
+                updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
+            )
+        }.sortedBy { it.date }
     }
 
     /** 获取某天的记录，不存在返回 null */
@@ -167,6 +158,9 @@ object CheckInManager {
         addQuizCorrect: Int = 0,
         addQuizTotal: Int = 0,
     ) {
+        require(addMinutes >= 0 && addWordsLearned >= 0 && addWordsMastered >= 0 &&
+            addQuizCorrect >= 0 && addQuizTotal >= 0) { "累加值不能为负数" }
+        require(addQuizCorrect <= addQuizTotal) { "答对题数不能超过总题数" }
         ensureInit()
         val today = todayKey()
         val list = allRecords().toMutableList()
@@ -202,7 +196,7 @@ object CheckInManager {
     /** 清空所有打卡记录（设置页使用） */
     fun clearAll() {
         ensureInit()
-        prefs.edit().remove(KEY_RECORDS).apply()
+        prefs.edit { remove(KEY_RECORDS) }
     }
 
     // ---------- 统计 ----------
@@ -243,10 +237,10 @@ object CheckInManager {
         return streak
     }
 
-    /** 历史最长连续打卡天数。脏日期（解析失败）直接跳过，不参与计算 */
+    /** 历史最长连续打卡天数 */
     private fun calcLongestStreak(records: List<CheckInRecord>): Int {
         val sorted = records
-            .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
+            .map { LocalDate.parse(it.date) }
             .distinct()
             .sorted()
         if (sorted.isEmpty()) return 0
@@ -291,6 +285,6 @@ object CheckInManager {
                 put("updatedAt", r.updatedAt)
             })
         }
-        prefs.edit().putString(KEY_RECORDS, arr.toString()).apply()
+        prefs.edit { putString(KEY_RECORDS, arr.toString()) }
     }
 }

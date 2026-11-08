@@ -56,7 +56,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
@@ -65,7 +68,7 @@ import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordDetail
-import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassListItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -83,8 +86,8 @@ fun SearchScreen(
     var keyword by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<WordDetail>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     // 上一次查询的任务与令牌：快速连续搜索时，慢返回的旧结果会覆盖新结果
     var searchJob by remember { mutableStateOf<Job?>(null) }
@@ -108,11 +111,8 @@ fun SearchScreen(
                         DatabaseManager.release(db)
                     }
                 }
-            } catch (_: Exception) {
-                // 查询失败时保留上一次结果，不让列表莫名清空
             } finally {
-                // 必须放 finally，否则异常时 searching 永远为 true，转圈永久卡死。
-                // 且只有「自己仍是最新一次查询」时才收起转圈：
+                // 只有「自己仍是最新一次查询」时才收起转圈：
                 // 被取消的旧任务若也来重置，会把新查询的转圈提前关掉。
                 if (token == searchToken) searching = false
             }
@@ -120,47 +120,13 @@ fun SearchScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.secondaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .offset(x = (-40).dp, y = 100.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 50.dp, y = 200.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text("搜索") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -178,7 +144,7 @@ fun SearchScreen(
                 placeholder = { Text("输入单词或片段…") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
                 singleLine = true,
-                shape = RoundedCornerShape(16.dp),
+                shape = GlassShapes.Item,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { doSearch() }),
             )
@@ -200,7 +166,8 @@ fun SearchScreen(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    items(results, key = { it.wordId }) { word ->
+                    // 跨词库搜索时 word_id 可能重复，key 必须带词库名
+                    items(results, key = { "${it.dbName}-${it.wordId}" }) { word ->
                         SearchResultCard(word = word, backdrop = liquidBackdrop, onClick = { onWordClick(word.wordId) })
                     }
                 }
@@ -212,17 +179,11 @@ fun SearchScreen(
 
 @Composable
 private fun SearchResultCard(word: WordDetail, backdrop: Backdrop, onClick: () -> Unit) {
-    LiquidGlassCard(
+    // 列表项使用轻量玻璃：每项都走 drawBackdrop 会产生 3~4 个 GraphicsLayer
+    LiquidGlassListItem(
         backdrop = backdrop,
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        blurRadius = 6.dp,
-        lensHeight = 8.dp,
-        lensAmount = 14.dp,
-        surfaceColor = Color.White.copy(alpha = 0.15f),
-        shadow = glassShadow(10.dp, 0.1f),
-        highlight = Highlight.Default.copy(alpha = 0.5f),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

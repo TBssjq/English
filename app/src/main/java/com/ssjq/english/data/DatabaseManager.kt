@@ -7,12 +7,6 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
 
-/** 通用查询结果（用于浏览表 / 自定义 SQL） */
-data class QueryResult(
-    val columns: List<String>,
-    val rows: List<List<String?>>,
-)
-
 /** 词汇列表项（轻量，用于列表展示） */
 data class WordListItem(
     val wordId: String,
@@ -36,6 +30,8 @@ data class WordDetail(
     val relWords: List<RelWordItem>,
     val synos: List<SynoItem>,
     val antos: List<String>,
+    /** 单词所属词库文件名（含 .db）。跨词库混合出题时用于把错题/收藏写回正确词库 */
+    val dbName: String? = null,
 )
 
 data class TransItem(val pos: String?, val tranCn: String?)
@@ -82,8 +78,6 @@ object DatabaseManager {
 
     /** 合法词库名：仅字母数字、下划线、连字符，且以 .db 结尾（防路径穿越） */
     private val SAFE_DB_NAME = Regex("^[A-Za-z0-9_-]+\\.db$")
-    /** 合法表名（防 SQL 注入，表名来自被打开的第三方 db 的 sqlite_master） */
-    private val SAFE_TABLE_NAME = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
 
     private class Conn(val db: SQLiteDatabase) {
         var refs: Int = 0
@@ -179,33 +173,48 @@ object DatabaseManager {
     }
 
     /**
+     * 词库是否已复制到内部存储。
+     * 查词时优先扫描已复制的词库：首次为查一个词而复制整本词库代价过高。
+     */
+    fun isCopied(context: Context, dbName: String): Boolean {
+        val name = normalizeDbName(dbName)
+        if (!SAFE_DB_NAME.matches(name)) return false
+        val file = File(dbDir(context), name)
+        return file.exists() && file.length() > 0L
+    }
+
+    /**
      * 获取词库的只读连接（引用计数 +1）。
      *
      * 同一词库始终复用同一连接，**切换词库不会关闭任何连接**，
      * 因此不会再把并发协程手里正在用的句柄关掉。
      * 使用完毕请调用 [release]；无法配对时连接会在闲置后被自动回收，不会泄漏。
      */
-    @Synchronized
     fun openDatabase(context: Context, dbName: String): SQLiteDatabase {
         val key = normalizeDbName(dbName)
-        val existing = pool[key]
-        if (existing != null && existing.db.isOpen) {
-            existing.refs++
-            existing.lastUsedNanos = System.nanoTime()
-            return existing.db
-        }
-        if (existing != null) {
-            // 连接已被外部关闭，丢弃后重建
-            pool.remove(key)
-        }
+        // ensureCopied 内部按词库加锁，可能触发整库复制；
+        // 放到类锁外执行，避免复制期间阻塞其它词库的 open/release
+        val path = ensureCopied(context, key)
+        synchronized(this) {
+            val existing = pool[key]
+            if (existing != null && existing.db.isOpen) {
+                existing.refs++
+                existing.lastUsedNanos = System.nanoTime()
+                return existing.db
+            }
+            if (existing != null) {
+                // 连接已被外部关闭，丢弃后重建
+                pool.remove(key)
+            }
 
-        reclaimIfNeeded()
+            reclaimIfNeeded()
 
-        val db = SQLiteDatabase.openDatabase(
-            ensureCopied(context, key), null, SQLiteDatabase.OPEN_READONLY
-        )
-        pool[key] = Conn(db).also { it.refs = 1 }
-        return db
+            val db = SQLiteDatabase.openDatabase(
+                path, null, SQLiteDatabase.OPEN_READONLY
+            )
+            pool[key] = Conn(db).also { it.refs = 1 }
+            return db
+        }
     }
 
     /** 归还连接，与 [openDatabase] 成对调用 */
@@ -232,7 +241,7 @@ object DatabaseManager {
     /** 关闭全部连接（退出应用时调用） */
     @Synchronized
     fun closeDatabase() {
-        pool.values.forEach { runCatching { it.db.close() } }
+        pool.values.forEach { it.db.close() }
         pool.clear()
     }
 
@@ -247,18 +256,19 @@ object DatabaseManager {
             .sortedBy { it.value.lastUsedNanos }
         for (e in idle) {
             if (pool.size <= MAX_IDLE_OPEN) break
-            runCatching { e.value.db.close() }
+            e.value.db.close()
             pool.remove(e.key)
         }
 
         if (pool.size <= MAX_TOTAL_OPEN) return
         val now = System.nanoTime()
         val stale = pool.entries
-            .filter { now - it.value.lastUsedNanos > IDLE_RECLAIM_NANOS }
+            // 只回收没有被任何协程持有的连接：关闭在用的句柄会让后续查询抛 already-closed
+            .filter { it.value.refs == 0 && now - it.value.lastUsedNanos > IDLE_RECLAIM_NANOS }
             .sortedBy { it.value.lastUsedNanos }
         for (e in stale) {
             if (pool.size <= MAX_TOTAL_OPEN) break
-            runCatching { e.value.db.close() }
+            e.value.db.close()
             pool.remove(e.key)
         }
     }
@@ -269,19 +279,15 @@ object DatabaseManager {
      * 用于首页展示词库规模，不影响正在使用的词库连接。
      */
     fun getWordCount(context: Context, dbName: String): Int {
-        // 词库损坏 / assets 缺失 / 表结构异常一律按 0 处理，绝不让首屏统计把 App 带崩
-        return try {
-            val path = ensureCopied(context, dbName)
-            SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-                if (!tableExists(db, "words")) return 0
-                db.rawQuery(
-                    "SELECT COUNT(*) FROM words WHERE head_word IS NOT NULL", null
-                ).use { c ->
-                    if (c.moveToFirst()) c.getInt(0) else 0
-                }
+        val path = ensureCopied(context, dbName)
+        SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            check(tableExists(db, "words")) { "词库缺少 words 表: $dbName" }
+            return db.rawQuery(
+                "SELECT COUNT(*) FROM words WHERE head_word IS NOT NULL", null
+            ).use { c ->
+                check(c.moveToFirst()) { "词数查询无结果: $dbName" }
+                c.getInt(0)
             }
-        } catch (_: Exception) {
-            0
         }
     }
 
@@ -302,121 +308,56 @@ object DatabaseManager {
         val results = mutableListOf<SearchResultItem>()
         for (dbName in allDbs) {
             val path = ensureCopied(context, dbName)
-            try {
-                SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-                    // 检查 words 和 trans 表是否存在
-                    if (!tableExists(db, "words")) return@use
-                    val hasTrans = tableExists(db, "trans")
+            SQLiteDatabase.openDatabase(path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                check(tableExists(db, "words")) { "词库缺少 words 表: $dbName" }
+                val hasTrans = tableExists(db, "trans")
 
-                    // 先取出本库命中的单词，再用一次 IN 批量取释义，
-                    // 避免旧实现「每个单词一次 rawQuery」的 N+1 查询
-                    val heads = mutableListOf<Pair<String, String>>()
-                    db.rawQuery(
-                        "SELECT word_id, head_word FROM words WHERE head_word LIKE ? " +
-                            "ORDER BY word_rank LIMIT ?",
-                        arrayOf(like, limitPerDb.toString())
-                    ).use { wc ->
-                        while (wc.moveToNext()) {
-                            val wordId = wc.getString(0) ?: continue
-                            val headWord = wc.getString(1) ?: continue
-                            heads.add(wordId to headWord)
-                        }
-                    }
-                    if (heads.isEmpty()) return@use
-
-                    val tranMap = mutableMapOf<String, String?>()
-                    if (hasTrans) {
-                        val placeholders = heads.joinToString(",") { "?" }
-                        val ids = heads.map { it.first }.toTypedArray()
-                        db.rawQuery(
-                            "SELECT word_id, tran_cn FROM trans WHERE word_id IN ($placeholders)",
-                            ids
-                        ).use { tc ->
-                            while (tc.moveToNext()) {
-                                val wid = tc.getString(0) ?: continue
-                                if (wid !in tranMap) tranMap[wid] = tc.getString(1)
-                            }
-                        }
-                    }
-                    heads.forEach { (wordId, headWord) ->
-                        results.add(
-                            SearchResultItem(
-                                wordId = wordId,
-                                headWord = headWord,
-                                tranCn = tranMap[wordId],
-                                dbName = dbName.removeSuffix(".db"),
-                            )
-                        )
+                // 先取出本库命中的单词，再用一次 IN 批量取释义
+                val heads = mutableListOf<Pair<String, String>>()
+                db.rawQuery(
+                    "SELECT word_id, head_word FROM words WHERE head_word LIKE ? " +
+                        "ORDER BY word_rank LIMIT ?",
+                    arrayOf(like, limitPerDb.toString())
+                ).use { wc ->
+                    while (wc.moveToNext()) {
+                        val wordId = wc.getString(0) ?: error("词库 $dbName 存在空的 word_id")
+                        val headWord = wc.getString(1) ?: error("词库 $dbName 存在空的 head_word")
+                        heads.add(wordId to headWord)
                     }
                 }
-            } catch (_: Exception) {
-                // 单个 db 出错不影响其他
+                if (heads.isEmpty()) return@use
+
+                val tranMap = mutableMapOf<String, String?>()
+                if (hasTrans) {
+                    val placeholders = heads.joinToString(",") { "?" }
+                    val ids = heads.map { it.first }.toTypedArray()
+                    db.rawQuery(
+                        "SELECT word_id, tran_cn FROM trans WHERE word_id IN ($placeholders)",
+                        ids
+                    ).use { tc ->
+                        while (tc.moveToNext()) {
+                            val wid = tc.getString(0)
+                                ?: error("词库 $dbName 的 trans 表存在空的 word_id")
+                            if (wid !in tranMap) tranMap[wid] = tc.getString(1)
+                        }
+                    }
+                }
+                heads.forEach { (wordId, headWord) ->
+                    results.add(
+                        SearchResultItem(
+                            wordId = wordId,
+                            headWord = headWord,
+                            tranCn = tranMap[wordId],
+                            dbName = dbName.removeSuffix(".db"),
+                        )
+                    )
+                }
             }
         }
         // 按单词字母排序
         return results.sortedBy { it.headWord.lowercase() }
     }
 
-
-    /** 获取所有用户表 */
-    fun getTables(db: SQLiteDatabase): List<String> {
-        val tables = mutableListOf<String>()
-        db.rawQuery(
-            "SELECT name FROM sqlite_master WHERE type='table' " +
-                "AND name NOT LIKE 'android_%' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-            null
-        ).use { c -> while (c.moveToNext()) tables.add(c.getString(0)) }
-        return tables
-    }
-
-    /** 执行任意 SELECT，返回结果。SQL 非法时返回空结果而不是抛异常 */
-    fun runQuery(db: SQLiteDatabase, sql: String): QueryResult = runQuery(db, sql, null)
-
-    /** 执行参数化 SELECT，返回结果。SQL 非法时返回空结果而不是抛异常 */
-    fun runQuery(db: SQLiteDatabase, sql: String, args: Array<String>?): QueryResult {
-        return try {
-            db.rawQuery(sql, args).use { cursor ->
-                val columns = cursor.columnNames.toList()
-                val rows = ArrayList<List<String?>>(cursor.count.coerceAtLeast(0))
-                while (cursor.moveToNext()) {
-                    rows.add((0 until cursor.columnCount).map { i ->
-                        // 列可能是 BLOB / 超长文本，取值失败按 null 处理
-                        try {
-                            cursor.getString(i)
-                        } catch (_: Exception) {
-                            null
-                        }
-                    })
-                }
-                QueryResult(columns, rows)
-            }
-        } catch (_: Exception) {
-            QueryResult(emptyList(), emptyList())
-        }
-    }
-
-    /**
-     * 浏览某张表。
-     *
-     * 表名来自被打开的第三方 db 的 sqlite_master，属于不可信输入，
-     * 因此做白名单校验（旧实现用反引号包裹，表名里再带反引号即可注入），
-     * LIMIT / OFFSET 统一用参数绑定。
-     */
-    fun browseTable(
-        db: SQLiteDatabase,
-        table: String,
-        limit: Int = 100,
-        offset: Int = 0,
-    ): QueryResult {
-        if (!SAFE_TABLE_NAME.matches(table)) return QueryResult(emptyList(), emptyList())
-        val safeLimit = limit.coerceIn(1, 1000)
-        val safeOffset = offset.coerceAtLeast(0)
-        return runQuery(
-            db,
-            "SELECT * FROM \"$table\" LIMIT ? OFFSET ?",
-            arrayOf(safeLimit.toString(), safeOffset.toString()),
-        )
-    }
 
     /** 获取词汇列表（按 word_rank 排序，关联第一条释义） */
     fun getWordList(db: SQLiteDatabase): List<WordListItem> {
@@ -476,13 +417,39 @@ object DatabaseManager {
     }
 
     /** 按单词（片段）模糊搜索，关联查询翻译/短语/例句等 */
+    /**
+     * 只判断词库中是否存在匹配词，返回命中词的 id 与词头。
+     * 查词时先用它做轻量探测，未命中的词库不必构造完整词条（含 6 张关联表查询）。
+     */
+    fun findHeadWordId(db: SQLiteDatabase, keyword: String): Pair<String, String>? {
+        if (!tableExists(db, "words")) return null
+        val like = "%$keyword%"
+        val prefix = "$keyword%"
+        return db.rawQuery(
+            "SELECT word_id, head_word FROM words WHERE head_word LIKE ? " +
+                "ORDER BY CASE WHEN head_word = ? THEN 0 " +
+                "WHEN head_word LIKE ? THEN 1 ELSE 2 END, word_rank LIMIT 1",
+            arrayOf(like, keyword, prefix)
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            val wordId = c.getString(0) ?: error("词库存在空的 word_id")
+            val headWord = c.getString(1) ?: error("词库存在空的 head_word")
+            wordId to headWord
+        }
+    }
+
     fun searchWords(db: SQLiteDatabase, keyword: String, limit: Int = 50): List<WordDetail> {
         if (!tableExists(db, "words")) return emptyList()
         val results = mutableListOf<WordDetail>()
         val like = "%$keyword%"
+        val prefix = "$keyword%"
+        // 精确匹配排最前，其次前缀匹配，最后才是包含匹配；
+        // 同一档内按词频序号排列，避免点击 grab 时先返回 grabbing
         db.rawQuery(
-            "SELECT * FROM words WHERE head_word LIKE ? ORDER BY word_rank LIMIT ?",
-            arrayOf(like, limit.toString())
+            "SELECT * FROM words WHERE head_word LIKE ? " +
+                "ORDER BY CASE WHEN head_word = ? THEN 0 " +
+                "WHEN head_word LIKE ? THEN 1 ELSE 2 END, word_rank LIMIT ?",
+            arrayOf(like, keyword, prefix, limit.toString())
         ).use { wc ->
             while (wc.moveToNext()) {
                 val wordId = wc.stringCol("word_id") ?: ""

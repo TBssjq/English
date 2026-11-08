@@ -30,9 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.highlight.Highlight
+import com.ssjq.english.ui.glass.GlassShapes
 import kotlinx.coroutines.delay
-
-private val ToastBrandColor = Color(0xFF00BCD4)
 
 /**
  * 通用 Toast。
@@ -47,25 +46,25 @@ fun FancyToast(
     onDismiss: () -> Unit,
     backdrop: Backdrop? = null,
 ) {
+    val containerColor = MaterialTheme.colorScheme.inverseSurface
+    val contentColor = MaterialTheme.colorScheme.inverseOnSurface
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn() + slideInVertically { it },
         exit = fadeOut() + slideOutVertically { it },
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 80.dp),
+            modifier = Modifier.padding(bottom = 80.dp),
             contentAlignment = Alignment.BottomCenter,
         ) {
             if (backdrop != null) {
                 LiquidGlassCard(
                     backdrop = backdrop,
-                    shape = RoundedCornerShape(24.dp),
+                    shape = GlassShapes.Card,
                     blurRadius = 6.dp,
                     lensHeight = 8.dp,
                     lensAmount = 14.dp,
-                    surfaceColor = ToastBrandColor.copy(alpha = 0.7f),
+                    surfaceColor = containerColor.copy(alpha = 0.85f),
                     shadow = glassShadow(12.dp, 0.25f),
                     highlight = Highlight.Default.copy(alpha = 0.7f),
                     innerShadow = glassInnerShadow(4.dp, 0.25f),
@@ -76,17 +75,17 @@ fun FancyToast(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        ToastContent(message)
+                        ToastContent(message, contentColor)
                     }
                 }
             } else {
                 Row(
                     modifier = Modifier
-                        .background(ToastBrandColor, RoundedCornerShape(24.dp))
+                        .background(containerColor, GlassShapes.Card)
                         .padding(horizontal = 20.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ToastContent(message)
+                    ToastContent(message, contentColor)
                 }
             }
         }
@@ -101,17 +100,17 @@ fun FancyToast(
 }
 
 @Composable
-private fun ToastContent(message: String) {
+private fun ToastContent(message: String, contentColor: Color) {
     Icon(
         Icons.Filled.CheckCircle,
         contentDescription = null,
-        tint = Color.White,
+        tint = contentColor,
     )
     Spacer(Modifier.width(10.dp))
     Text(
         message,
         style = MaterialTheme.typography.bodyMedium,
         fontWeight = FontWeight.Medium,
-        color = Color.White,
+        color = contentColor,
     )
 }

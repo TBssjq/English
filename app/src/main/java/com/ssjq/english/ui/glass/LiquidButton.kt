@@ -50,16 +50,15 @@ fun LiquidButton(
             animationScope = animationScope
         )
     }
-
     Row(
         modifier
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { Capsule },
+                shape = GlassShapes.PillBlock,
                 effects = {
-                    vibrancy()
-                    blur(2f.dp.toPx())
-                    lens(12f.dp.toPx(), 24f.dp.toPx())
+                    if (GlassQuality.vibrancyEnabled) vibrancy()
+                    blur(2f.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) lens(12f.dp.toPx(), 24f.dp.toPx())
                 },
                 layerBlock = if (isInteractive) {
                     {

@@ -61,7 +61,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.LocalGlassPalette
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
@@ -100,12 +104,16 @@ fun CrazyQuizScreen(
     suspend fun calculateStats() {
         // 旧实现在主线程对 N 个词库各解析 2 次完整 JSON（共 2N 次），
         // 几十个词库时明显卡顿。改为 IO 线程一次解析出各词库计数。
-        withContext(Dispatchers.IO) {
+        // IO 线程只负责取值，状态回到主线程赋值
+        val (w, f) = withContext(Dispatchers.IO) {
             val wMap = UserLibrary.wrongCountByDb()
             val fMap = UserLibrary.favoriteCountByDb()
-            wrongCount = allDbs.sumOf { wMap[it.removeSuffix(".db")] ?: 0 }
-            favoriteCount = allDbs.sumOf { fMap[it.removeSuffix(".db")] ?: 0 }
+            // wrongCountByDb/favoriteCountByDb 的 key 是 WordEntry.dbName（含 .db 后缀），
+            // allDbs 的元素同样带后缀，直接查即可；去掉后缀会永远匹配不到
+            allDbs.sumOf { wMap[it] ?: 0 } to allDbs.sumOf { fMap[it] ?: 0 }
         }
+        wrongCount = w
+        favoriteCount = f
     }
 
     LaunchedEffect(allDbs) {
@@ -113,8 +121,9 @@ fun CrazyQuizScreen(
     }
 
     var startQuizTrigger by remember { mutableStateOf<CrazyQuizSource?>(null) }
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层与玻璃配色
+    val liquidBackdrop = LocalAppBackdrop.current
+    val glassSurface = LocalGlassPalette.current.surfaceTint
 
     LaunchedEffect(startQuizTrigger) {
         val source = startQuizTrigger ?: return@LaunchedEffect
@@ -140,18 +149,14 @@ fun CrazyQuizScreen(
                     // openDatabase 需要带 .db 后缀的资产文件名，缺失时补上，
                     // 避免 FileNotFoundException
                     val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
+                    val db = DatabaseManager.openDatabase(context, dbName)
                     try {
-                        val db = DatabaseManager.openDatabase(context, dbName)
-                        try {
-                            DatabaseManager.getWordList(db)
-                                .shuffled()
-                                .take(100)
-                                .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
-                        } finally {
-                            DatabaseManager.release(db)
-                        }
-                    } catch (_: Exception) {
-                        emptyList()
+                        DatabaseManager.getWordList(db)
+                            .shuffled()
+                            .take(100)
+                            .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
+                    } finally {
+                        DatabaseManager.release(db)
                     }
                 }
             }
@@ -180,54 +185,13 @@ fun CrazyQuizScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.secondaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .offset(x = (-40).dp, y = 100.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 50.dp, y = 200.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(120.dp)
-                    .offset(x = 30.dp, y = 450.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         topBar = {
             LargeTopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text("疯狂刷题", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -258,7 +222,7 @@ fun CrazyQuizScreen(
                     LiquidGlassCard(
                         backdrop = liquidBackdrop,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(24.dp),
+                        shape = GlassShapes.Card,
                         blurRadius = 10.dp,
                         lensHeight = 14.dp,
                         lensAmount = 24.dp,
@@ -316,7 +280,7 @@ fun CrazyQuizScreen(
                                 startQuizTrigger = CrazyQuizSource.LIBRARY
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
+                            shape = GlassShapes.Item,
                             blurRadius = 6.dp,
                             lensHeight = 10.dp,
                             lensAmount = 18.dp,
@@ -368,11 +332,11 @@ fun CrazyQuizScreen(
                         backdrop = liquidBackdrop,
                         onClick = { onSourceSelected(CrazyQuizSource.WRONG) },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                         blurRadius = 6.dp,
                         lensHeight = 10.dp,
                         lensAmount = 18.dp,
-                        surfaceColor = Color.White.copy(alpha = 0.18f),
+                        surfaceColor = glassSurface,
                         shadow = glassShadow(14.dp, 0.12f),
                         highlight = Highlight.Default.copy(alpha = 0.6f),
                     ) {
@@ -420,11 +384,11 @@ fun CrazyQuizScreen(
                         backdrop = liquidBackdrop,
                         onClick = { onSourceSelected(CrazyQuizSource.FAVORITE) },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                         blurRadius = 6.dp,
                         lensHeight = 10.dp,
                         lensAmount = 18.dp,
-                        surfaceColor = Color.White.copy(alpha = 0.18f),
+                        surfaceColor = glassSurface,
                         shadow = glassShadow(14.dp, 0.12f),
                         highlight = Highlight.Default.copy(alpha = 0.6f),
                     ) {
@@ -472,11 +436,11 @@ fun CrazyQuizScreen(
                         backdrop = liquidBackdrop,
                         onClick = { onSourceSelected(CrazyQuizSource.LIBRARY) },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                         blurRadius = 6.dp,
                         lensHeight = 10.dp,
                         lensAmount = 18.dp,
-                        surfaceColor = Color.White.copy(alpha = 0.18f),
+                        surfaceColor = glassSurface,
                         shadow = glassShadow(14.dp, 0.12f),
                         highlight = Highlight.Default.copy(alpha = 0.6f),
                     ) {
@@ -536,7 +500,7 @@ private fun SelectDbScreen(
             Card(
                 onClick = { onSelect(dbName) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                shape = GlassShapes.Item,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
             ) {
@@ -561,15 +525,12 @@ private fun SelectDbScreen(
  * 旧实现每次查完都不释放连接，疯狂刷题加载 100 词会堆积 100 个 SQLite 连接。
  */
 private fun loadEntryDetail(context: android.content.Context, entry: WordEntry): WordDetail? {
+    val dbFileName = if (entry.dbName.endsWith(".db")) entry.dbName else "${entry.dbName}.db"
+    val db = DatabaseManager.openDatabase(context, dbFileName)
     return try {
-        val db = DatabaseManager.openDatabase(context, entry.dbName + ".db")
-        try {
-            DatabaseManager.getWordDetail(db, entry.wordId)
-        } finally {
-            DatabaseManager.release(db)
-        }
-    } catch (_: Exception) {
-        null
+        DatabaseManager.getWordDetail(db, entry.wordId)?.copy(dbName = dbFileName)
+    } finally {
+        DatabaseManager.release(db)
     }
 }
 

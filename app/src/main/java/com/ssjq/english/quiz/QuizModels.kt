@@ -34,7 +34,11 @@ data class QuizQuestion(
 sealed class AnswerResult {
     data object Idle : AnswerResult()
     data object Correct : AnswerResult()
-    data class AlmostCorrect(val tip: String) : AnswerResult()
+    data class AlmostCorrect(
+        val tip: String,
+        /** 字母级差异：仅有一处拼写偏差时也要标出是哪几个字母 */
+        val diffInfo: List<CharDiff> = emptyList(),
+    ) : AnswerResult()
     data class Wrong(val userAnswer: String, val correct: String, val diffInfo: List<CharDiff> = emptyList()) : AnswerResult()
 }
 

@@ -91,7 +91,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
@@ -106,6 +109,9 @@ import com.ssjq.english.ui.common.ImportExportDialog
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.common.ShimmerBox
+import com.ssjq.english.ui.common.performExport
+import com.ssjq.english.ui.common.performImport
+import com.ssjq.english.ui.common.rememberShimmerAlpha
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -146,15 +152,34 @@ fun WordListScreen(
      * 否则在返回本页面（ON_RESUME）或切词库时阻塞主线程。
      */
     suspend fun refreshCounts() {
-        withContext(Dispatchers.IO) {
-            wrongCount = com.ssjq.english.data.UserLibrary.wrongCount(dbName)
-            favoriteCount = com.ssjq.english.data.UserLibrary.favoriteCount(dbName)
-            studyIndex = com.ssjq.english.data.UserLibrary.studyIndex(dbName)
-            studyTotal = words.size
-            autoFav = com.ssjq.english.data.UserLibrary.autoFavoriteEnabled(dbName)
-            wrongIds = com.ssjq.english.data.UserLibrary.wrongWords(dbName).map { it.wordId }.toSet()
-            favoriteIds = com.ssjq.english.data.UserLibrary.favorites(dbName).map { it.wordId }.toSet()
+        data class Counts(
+            val wrongCount: Int,
+            val favoriteCount: Int,
+            val studyIndex: Int,
+            val studyTotal: Int,
+            val autoFav: Boolean,
+            val wrongIds: Set<String>,
+            val favoriteIds: Set<String>,
+        )
+        // IO 线程只负责取值，状态回到主线程赋值
+        val counts = withContext(Dispatchers.IO) {
+            Counts(
+                wrongCount = com.ssjq.english.data.UserLibrary.wrongCount(dbName),
+                favoriteCount = com.ssjq.english.data.UserLibrary.favoriteCount(dbName),
+                studyIndex = com.ssjq.english.data.UserLibrary.studyIndex(dbName),
+                studyTotal = words.size,
+                autoFav = com.ssjq.english.data.UserLibrary.autoFavoriteEnabled(dbName),
+                wrongIds = com.ssjq.english.data.UserLibrary.wrongWords(dbName).map { it.wordId }.toSet(),
+                favoriteIds = com.ssjq.english.data.UserLibrary.favorites(dbName).map { it.wordId }.toSet(),
+            )
         }
+        wrongCount = counts.wrongCount
+        favoriteCount = counts.favoriteCount
+        studyIndex = counts.studyIndex
+        studyTotal = counts.studyTotal
+        autoFav = counts.autoFav
+        wrongIds = counts.wrongIds
+        favoriteIds = counts.favoriteIds
     }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
@@ -167,14 +192,13 @@ fun WordListScreen(
 
     LaunchedEffect(dbName) {
         loading = true
-        // openDatabase 对非法/缺失词库会抛异常，未捕获会直接从协程冒泡导致崩溃
-        words = try {
-            withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
+        words = withContext(Dispatchers.IO) {
+            val db = DatabaseManager.openDatabase(context, dbName)
+            try {
                 DatabaseManager.getWordList(db)
+            } finally {
+                DatabaseManager.release(db)
             }
-        } catch (_: Exception) {
-            emptyList()
         }
         loading = false
         refreshCounts()
@@ -187,59 +211,18 @@ fun WordListScreen(
     }
 
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑（玻璃折射的采样源）
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(200.dp)
-                    .offset(x = (-40).dp, y = 100.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-            )
-            Box(
-                Modifier
-                    .size(160.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 60.dp, y = 200.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .offset(x = 50.dp, y = 450.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
-            )
-        }
-
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHost) },
         topBar = {
             LargeTopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text(dbName.removeSuffix(".db"), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -340,7 +323,7 @@ fun WordListScreen(
                 LiquidGlassCard(
                     backdrop = liquidBackdrop,
                     onClick = { onStartStudy() },
-                    shape = RoundedCornerShape(28.dp),
+                    shape = GlassShapes.Panel,
                     blurRadius = 8.dp,
                     lensHeight = 12.dp,
                     lensAmount = 20.dp,
@@ -372,7 +355,8 @@ fun WordListScreen(
         },
     ) { padding ->
         if (loading) {
-            // 骨架屏占位
+            // 骨架屏占位：所有占位块共享一个呼吸动画
+            val shimmerAlpha = rememberShimmerAlpha()
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(320.dp),
                 modifier = Modifier.padding(padding).fillMaxSize(),
@@ -380,7 +364,7 @@ fun WordListScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(8) { SkeletonRow() }
+                items(8) { SkeletonRow(shimmerAlpha) }
             }
         } else {
             // 自适应栅格：手机单列，平板/折叠屏自动多列
@@ -407,7 +391,8 @@ fun WordListScreen(
                             studied = list.count { it.wordId in wrongIds || it.wordId in favoriteIds },
                         )
                     }
-                    items(list, key = { it.wordId }) { word ->
+                    // key 带分组标题：同一 word_id 可能出现在不同分组或第三方词库中
+                    items(list, key = { "${title}-${it.wordId}" }) { word ->
                         WordRow(
                             word = word,
                             isWrong = word.wordId in wrongIds,
@@ -453,21 +438,36 @@ fun WordListScreen(
     ImportExportDialog(
         visible = showImportExportDialog,
         onDismiss = { showImportExportDialog = false },
-        onResult = { message -> },
+        onExportRequested = { uri, exportScope, groupName, dbName, contentType ->
+            scope.launch {
+                val message = withContext(Dispatchers.IO) {
+                    performExport(context, uri, exportScope, groupName, dbName, contentType)
+                }
+                snackbarHost.showSnackbar(message)
+            }
+        },
+        onImportConfirmed = { uri, strategy ->
+            scope.launch {
+                val message = withContext(Dispatchers.IO) {
+                    performImport(context, uri, strategy)
+                }
+                snackbarHost.showSnackbar(message)
+            }
+        },
     )
 }
 
 /** 骨架屏行：模拟列表项布局 */
 @Composable
-private fun SkeletonRow() {
-    OutlinedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+private fun SkeletonRow(shimmerAlpha: Float) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth(), shape = GlassShapes.Item) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            ShimmerBox(Modifier.size(28.dp).clip(CircleShape))
+            ShimmerBox(Modifier.size(28.dp).clip(CircleShape), shimmerAlpha)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                ShimmerBox(Modifier.fillMaxWidth(0.5f).height(18.dp))
+                ShimmerBox(Modifier.fillMaxWidth(0.5f).height(18.dp), shimmerAlpha)
                 Spacer(Modifier.height(6.dp))
-                ShimmerBox(Modifier.fillMaxWidth(0.3f).height(12.dp))
+                ShimmerBox(Modifier.fillMaxWidth(0.3f).height(12.dp), shimmerAlpha)
             }
         }
     }
@@ -617,7 +617,7 @@ private fun QuizEntryCard(
         backdrop = backdrop,
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = GlassShapes.Card,
         blurRadius = 8.dp,
         lensHeight = 14.dp,
         lensAmount = 24.dp,

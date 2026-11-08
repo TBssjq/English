@@ -2,11 +2,10 @@
 
 package com.ssjq.english.ui.worddetail
 
+import android.widget.Toast
 import com.ssjq.english.ui.common.glassInnerShadow
 import com.ssjq.english.ui.common.glassShadow
 
-import android.media.AudioAttributes
-import android.media.MediaPlayer
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -20,6 +19,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -69,8 +71,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,6 +93,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.TextAlign
@@ -100,23 +106,101 @@ import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.WordEntry
+import com.ssjq.english.ui.common.LiquidGlassBottomBar
 import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.data.LibraryCatalog
+import com.ssjq.english.data.ReviewScheduler
+import com.ssjq.english.ui.common.LiquidGlassListItem
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.ssjq.english.ui.common.ShimmerBox
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
+import com.ssjq.english.service.PronunciationPlayer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
-import java.util.concurrent.atomic.AtomicReference
 
 data class WordSearchResult(val dbName: String, val word: WordDetail)
+
+/** 查词结果上限：覆盖多本词库，同时避免一次点击把全部词库都扫一遍 */
+private const val MAX_SEARCH_RESULTS = 20
+
+/** 单次查词最多扫描的词库数：每本词库首次打开都要整库复制，扫全部 81 本会长时间无反馈 */
+private const val MAX_SCAN_DBS = 8
+
+/** 其中允许触发整库复制的词库数。未使用过的词库单本可达数十 MB，必须严格限量 */
+private const val MAX_UNCACHED_SCAN = 2
+
+/** 查词跳转的返回层级上限，避免长会话里无限累积 */
+private const val MAX_WORD_HISTORY = 20
+
+/** 查词结果行：单词、释义与所属词库；当前词库用主色标签区分 */
+@Composable
+private fun SearchResultRow(
+    backdrop: Backdrop,
+    result: WordSearchResult,
+    currentDb: String,
+    onClick: () -> Unit,
+) {
+    val word = result.word
+    val isCurrent = result.dbName == currentDb
+    LiquidGlassListItem(
+        backdrop = backdrop,
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    word.headWord,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                word.trans.firstOrNull()?.let {
+                    Text(
+                        listOfNotNull(it.pos, it.tranCn).joinToString("  "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Surface(
+                shape = GlassShapes.Tag,
+                color = if (isCurrent) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.secondaryContainer
+                },
+            ) {
+                Text(
+                    result.dbName,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isCurrent) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    },
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun WordDetailScreen(
@@ -128,6 +212,7 @@ fun WordDetailScreen(
     onNavigateToWord: (dbName: String, wordId: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
+    val reviewScope = rememberCoroutineScope()
     var detail by remember { mutableStateOf<WordDetail?>(null) }
     var loading by remember { mutableStateOf(true) }
     var revealed by remember { mutableStateOf(false) }
@@ -138,14 +223,13 @@ fun WordDetailScreen(
     var browseQueue by remember(dbName) { mutableStateOf<List<String>?>(null) }
     LaunchedEffect(dbName) {
         if (wordQueue == null) {
-            // openDatabase 可能抛异常，未捕获会崩溃
-            browseQueue = try {
-                withContext(Dispatchers.IO) {
-                    val db = DatabaseManager.openDatabase(context, dbName)
+            browseQueue = withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                try {
                     DatabaseManager.getWordList(db).map { it.wordId }
+                } finally {
+                    DatabaseManager.release(db)
                 }
-            } catch (_: Exception) {
-                emptyList()
             }
         }
     }
@@ -158,6 +242,11 @@ fun WordDetailScreen(
             if (isStudyMode) startIndex.coerceIn(0, lastIndex)
             else (queue?.indexOf(wordId)?.takeIf { it >= 0 } ?: 0).coerceIn(0, lastIndex)
         )
+    }
+    // 查词跳转过的单词位置。返回键先在这里逐级回退，退完才退出背诵页
+    val wordHistory = remember(queue) { mutableStateListOf<Int>() }
+    BackHandler(enabled = wordHistory.isNotEmpty()) {
+        currentIndex = wordHistory.removeAt(wordHistory.lastIndex)
     }
     val currentWordId = queue?.getOrNull(currentIndex) ?: wordId
     val total = queue?.size ?: 1
@@ -187,14 +276,16 @@ fun WordDetailScreen(
         isFavorite = fav
         isWrong = wr
     }
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     // 搜索弹窗
     var showWordSearch by remember { mutableStateOf(false) }
     var searchKeyword by remember { mutableStateOf("") }
-    var searchResult by remember { mutableStateOf<WordSearchResult?>(null) }
+    var searchResults by remember { mutableStateOf<List<WordSearchResult>>(emptyList()) }
     var searchLoading by remember { mutableStateOf(false) }
+    var searchDone by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
 
     // 手势交互状态
     var dragOffset by remember { mutableStateOf(Offset.Zero) }
@@ -209,44 +300,107 @@ fun WordDetailScreen(
         allDbs = withContext(Dispatchers.IO) { DatabaseManager.listAssetDatabases(context) }
     }
 
-    // 搜索单词：先在当前词库搜索，再在所有词库搜索
-    suspend fun searchWord(word: String): WordSearchResult? {
-        // 先在当前词库搜索（openDatabase/searchWords 可能抛异常，需捕获）
-        val currentResult = try {
+    /** 在指定词库中查找单词：先轻量探测命中词，只为命中词取完整词条 */
+    suspend fun findWordInDb(name: String, query: String): WordDetail? =
+        withContext(Dispatchers.IO) {
+            val db = DatabaseManager.openDatabase(context, name)
+            try {
+                val hit = DatabaseManager.findHeadWordId(db, query) ?: return@withContext null
+                // 探测到词头却取不到词条说明该库数据不完整，跳过这本词库继续找，
+                // 不在此处抛异常：协程里的异常会让弹窗永远停在加载态
+                DatabaseManager.getWordDetail(db, hit.first)
+            } finally {
+                DatabaseManager.release(db)
+            }
+        }
+
+    /** 学习量与掌握量都要改写整段打卡 JSON，统一放到 IO 线程 */
+    fun markLearnedOnce() {
+        reviewScope.launch {
             withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
-                DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
+                CheckInManager.accumulate(addWordsLearned = 1)
             }
-        } catch (_: Exception) {
-            null
         }
-        if (currentResult != null) return WordSearchResult(dbName, currentResult)
-        // 在所有词库中搜索
-        for (otherDb in allDbs) {
-            val otherDbName = otherDb.removeSuffix(".db")
-            if (otherDbName == dbName) continue
-            val result = try {
-                withContext(Dispatchers.IO) {
-                    val db = DatabaseManager.openDatabase(context, otherDbName)
-                    DatabaseManager.searchWords(db, word, limit = 1).firstOrNull()
-                }
-            } catch (_: Exception) {
-                null
+    }
+
+    fun markMasteredOnce() {
+        reviewScope.launch {
+            withContext(Dispatchers.IO) {
+                CheckInManager.accumulate(addWordsMastered = 1)
             }
-            if (result != null) return WordSearchResult(otherDbName, result)
         }
-        return null
     }
 
     fun handleWordClick(word: String) {
         searchKeyword = word
+        // 清掉上一轮结果，避免新一次查找先闪一下旧内容
+        searchResults = emptyList()
+        searchDone = false
+        searchError = null
         searchLoading = true
         showWordSearch = true
     }
 
     LaunchedEffect(showWordSearch, searchKeyword) {
-        if (showWordSearch && searchKeyword.isNotEmpty()) {
-            searchResult = searchWord(searchKeyword)
+        if (!showWordSearch || searchKeyword.isEmpty()) return@LaunchedEffect
+        val query = searchKeyword.trim()
+        if (query.isEmpty()) {
+            searchLoading = false
+            searchDone = true
+            return@LaunchedEffect
+        }
+        try {
+            val currentName = dbName.removeSuffix(".db")
+            // 第一层：当前词库命中就直接进入，不再弹窗
+            val currentHit = findWordInDb(currentName, query)
+            if (currentHit != null) {
+                showWordSearch = false
+                searchLoading = false
+                val idx = wordQueue?.indexOf(currentHit.wordId) ?: -1
+                if (idx >= 0) {
+                    if (idx == currentIndex) {
+                        Toast.makeText(context, "当前正在学习该单词", Toast.LENGTH_SHORT).show()
+                    } else {
+                        wordHistory.add(currentIndex)
+                        if (wordHistory.size > MAX_WORD_HISTORY) wordHistory.removeAt(0)
+                        currentIndex = idx
+                    }
+                } else {
+                    onNavigateToWord(currentName, currentHit.wordId)
+                }
+                return@LaunchedEffect
+            }
+            // allDbs 由另一个 LaunchedEffect 异步加载，启动后立刻查词时可能仍是空
+            val available = if (allDbs.isEmpty()) {
+                withContext(Dispatchers.IO) { DatabaseManager.listAssetDatabases(context) }
+            } else {
+                allDbs
+            }
+            // 后续层：同子分类 → 同分类 → 其他词库，逐层扩大范围。
+            // 已复制的词库排在前面，并限制总扫描数以控制首次复制开销。
+            val baseOrder = LibraryCatalog.searchOrder(
+                currentName,
+                available.map { it.removeSuffix(".db") },
+            )
+            val order = withContext(Dispatchers.IO) {
+                val (copied, uncached) = baseOrder.partition { DatabaseManager.isCopied(context, it) }
+                (copied + uncached.take(MAX_UNCACHED_SCAN)).take(MAX_SCAN_DBS)
+            }
+            val found = mutableListOf<WordSearchResult>()
+            for (name in order) {
+                if (name == currentName) continue
+                if (found.size >= MAX_SEARCH_RESULTS) break
+                val hit = findWordInDb(name, query)
+                if (hit != null) found.add(WordSearchResult(name, hit))
+            }
+            searchResults = found
+            searchDone = true
+            searchLoading = false
+        } catch (e: Exception) {
+            // 词库损坏或 assets 缺失时给出明确提示，弹窗不能一直停在转圈状态
+            searchResults = emptyList()
+            searchError = e.message ?: "查找失败"
+            searchDone = true
             searchLoading = false
         }
     }
@@ -299,121 +453,38 @@ fun WordDetailScreen(
     // 有道词典发音 API：https://dict.youdao.com/dictvoice?audio={word}&type={type}
     // type=1 英音，type=2 美音。
     //
-    // 旧实现每次发音都 new 一个 MediaPlayer 且不保存引用，只在播放完成/出错时回收：
-    // 连点发音会多个音频叠加，页面退出时正在缓冲的实例随 Activity 泄漏，
-    // 累积后突破 MediaPlayer 进程上限抛异常并静默失效。
-    // 现在复用单个实例，并在页面销毁时统一释放。
-    // 用 AtomicReference 而非 State：发音不需要触发重组。
-    val playerRef = remember { AtomicReference<MediaPlayer?>(null) }
-
-    fun releasePlayer() {
-        playerRef.getAndSet(null)?.let { player ->
-            try {
-                if (player.isPlaying) player.stop()
-                player.reset()
-                player.release()
-            } catch (_: Exception) {
-                // 释放失败无补救手段，忽略
-            }
-        }
-    }
-
+    val pronunciationPlayer = remember { PronunciationPlayer() }
     DisposableEffect(Unit) {
-        onDispose { releasePlayer() }
+        onDispose { pronunciationPlayer.release() }
     }
-
     val speak: (String, Int) -> Unit = { word, type ->
-        val encoded = try {
-            URLEncoder.encode(word, "UTF-8")
-        } catch (_: Exception) {
-            null
-        }
-        if (encoded != null) {
-            val url = "https://dict.youdao.com/dictvoice?audio=$encoded&type=$type"
-            releasePlayer()
-            try {
-                val player = MediaPlayer().apply {
-                    setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .build()
-                    )
-                    setDataSource(url)
-                    setOnPreparedListener { runCatching { start() } }
-                    setOnCompletionListener { releasePlayer() }
-                    setOnErrorListener { _, _, _ -> releasePlayer(); true }
-                    prepareAsync()
-                }
-                playerRef.set(player)
-            } catch (_: Exception) {
-                // 忽略播放失败
-                releasePlayer()
-            }
-        }
+        pronunciationPlayer.speak(word, type)
     }
 
     LaunchedEffect(dbName, currentWordId) {
         loading = true
         revealed = false
-        // 词库损坏 / 单词不存在时不能让异常从这里抛出去崩溃
-        detail = try {
-            withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
-                try {
-                    DatabaseManager.getWordDetail(db, currentWordId)
-                } finally {
-                    DatabaseManager.release(db)
-                }
+        // 加载期间必须清空旧词：否则收藏/标记会作用在上一个单词上
+        detail = null
+        detail = withContext(Dispatchers.IO) {
+            val db = DatabaseManager.openDatabase(context, dbName)
+            try {
+                DatabaseManager.getWordDetail(db, currentWordId)
+            } finally {
+                DatabaseManager.release(db)
             }
-        } catch (_: Exception) {
-            null
         }
         loading = false
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.secondaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(200.dp)
-                    .offset(x = (-50).dp, y = 80.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(160.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 40.dp, y = 300.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = {
                     Column {
                         Text(detail?.headWord ?: "",
@@ -537,7 +608,7 @@ fun WordDetailScreen(
                                 cameraDistance = 12 * density
                                 alpha = 0.96f
                             },
-                        shape = RoundedCornerShape(28.dp),
+                        shape = GlassShapes.Panel,
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f)
                         ),
@@ -546,7 +617,15 @@ fun WordDetailScreen(
                             width = 1.dp,
                             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                         ),
-                        onClick = { revealed = !revealed },
+                        onClick = {
+                            // 卡片翻面与评分按钮翻面走同一套计数，避免学习量漏记
+                            if (revealed) {
+                                revealed = false
+                            } else {
+                                revealed = true
+                                markLearnedOnce()
+                            }
+                        },
                     ) {
                         AnimatedContent(
                             targetState = revealed,
@@ -734,25 +813,37 @@ fun WordDetailScreen(
                         // 已翻面后再点击评分才会记录并进入下一个单词。
                         if (!revealed) {
                             revealed = true
-                            CheckInManager.accumulate(addWordsLearned = 1)
+                            markLearnedOnce()
                         } else {
                             if (grade == 0) markWrong()
                             if (grade == 2) {
                                 markKnown()
-                                CheckInManager.accumulate(addWordsMastered = 1)
+                                markMasteredOnce()
+                            }
+                            // 记录复习结果并安排下一次到期日；读写独立 SP，放到 IO 线程
+                            reviewScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    ReviewScheduler.record(dbName, currentWordId, grade)
+                                }
                             }
                             if (isStudyMode) {
-                                if (currentIndex < total - 1) currentIndex++
-                                else onBack()
+                                if (currentIndex < total - 1) {
+                                    currentIndex++
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "本轮背诵完成",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    onBack()
+                                }
                             }
                         }
                     }
-                    // 底部悬浮操作栏：顶部大圆角 + elevation + 按钮色彩层级化
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        shadowElevation = 3.dp,
+                    // 底部悬浮操作栏：液态玻璃底板 + 按钮色彩层级化
+                    LiquidGlassBottomBar(
+                        backdrop = liquidBackdrop,
+                        shape = GlassShapes.Panel,
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
@@ -762,7 +853,7 @@ fun WordDetailScreen(
                             OutlinedButton(
                                 onClick = { onGrade(0) },
                                 modifier = Modifier.weight(1f).height(52.dp),
-                                shape = RoundedCornerShape(16.dp),
+                                shape = GlassShapes.Item,
                                 colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
                                     contentColor = MaterialTheme.colorScheme.error,
                                 ),
@@ -779,7 +870,7 @@ fun WordDetailScreen(
                             androidx.compose.material3.FilledTonalButton(
                                 onClick = { onGrade(1) },
                                 modifier = Modifier.weight(1f).height(52.dp),
-                                shape = RoundedCornerShape(16.dp),
+                                shape = GlassShapes.Item,
                             ) {
                                 Text("模糊", style = MaterialTheme.typography.labelLarge)
                             }
@@ -787,7 +878,7 @@ fun WordDetailScreen(
                             Button(
                                 onClick = { onGrade(2) },
                                 modifier = Modifier.weight(1f).height(52.dp),
-                                shape = RoundedCornerShape(16.dp),
+                                shape = GlassShapes.Item,
                             ) {
                                 Text("认识", style = MaterialTheme.typography.labelLarge)
                             }
@@ -802,14 +893,15 @@ fun WordDetailScreen(
         androidx.compose.ui.window.Dialog(
             onDismissRequest = {
                 showWordSearch = false
-                searchResult = null
+                searchResults = emptyList()
+                searchDone = false
                 searchKeyword = ""
             },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = RoundedCornerShape(24.dp),
+                shape = GlassShapes.Card,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
@@ -818,77 +910,80 @@ fun WordDetailScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            "搜索 \"$searchKeyword\"",
+                            if (searchDone && searchResults.isNotEmpty()) {
+                                "查找 \"$searchKeyword\"（${searchResults.size}）"
+                            } else {
+                                "查找 \"$searchKeyword\""
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         IconButton(onClick = {
                             showWordSearch = false
-                            searchResult = null
+                            searchResults = emptyList()
+                            searchDone = false
                             searchKeyword = ""
                         }) {
                             Icon(Icons.Filled.Close, "关闭")
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(12.dp))
 
                     if (searchLoading) {
-                        Box(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                modifier = Modifier.align(Alignment.Center),
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "正在查找可用的词库…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                    } else if (searchResult != null) {
-                        val result = searchResult!!
-                        val word = result.word
-                        Column {
-                            Text(
-                                word.headWord,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.ExtraBold,
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            word.trans.firstOrNull()?.let {
-                                Text(
-                                    listOfNotNull(it.pos, it.tranCn).joinToString("  "),
-                                    style = MaterialTheme.typography.bodyMedium,
+                    } else if (searchResults.isNotEmpty()) {
+                        // 覆盖全部词库的结果，按「精确 > 前缀 > 包含」排序；
+                        // 点任意一条进入对应词库中的单词卡片
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(
+                                items = searchResults,
+                                key = { "${it.dbName}-${it.word.wordId}" },
+                            ) { result ->
+                                SearchResultRow(
+                                    backdrop = liquidBackdrop,
+                                    result = result,
+                                    currentDb = dbName,
+                                    onClick = {
+                                        showWordSearch = false
+                                        searchResults = emptyList()
+                                        searchDone = false
+                                        if (result.dbName == dbName && wordQueue != null) {
+                                            val idx = wordQueue.indexOf(result.word.wordId)
+                                            if (idx >= 0) {
+                                                wordHistory.add(currentIndex)
+                                                if (wordHistory.size > MAX_WORD_HISTORY) {
+                                                    wordHistory.removeAt(0)
+                                                }
+                                                currentIndex = idx
+                                            } else {
+                                                // 当前词库但不在本次队列里，按跨词库跳转处理
+                                                onNavigateToWord(dbName, result.word.wordId)
+                                            }
+                                        } else {
+                                            onNavigateToWord(result.dbName, result.word.wordId)
+                                        }
+                                    },
                                 )
                             }
-                            Spacer(Modifier.height(12.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                word.ukPhone?.let {
-                                    androidx.compose.material3.FilledTonalButton(
-                                        onClick = { speak(word.headWord, 1) },
-                                    ) {
-                                        Text("英音")
-                                    }
-                                }
-                                word.usPhone?.let {
-                                    androidx.compose.material3.FilledTonalButton(
-                                        onClick = { speak(word.headWord, 2) },
-                                    ) {
-                                        Text("美音")
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.height(16.dp))
-                            Button(
-                                onClick = {
-                                    showWordSearch = false
-                                    if (result.dbName == dbName && wordQueue != null) {
-                                        val idx = wordQueue.indexOf(word.wordId)
-                                        if (idx >= 0) currentIndex = idx
-                                    } else {
-                                        onNavigateToWord(result.dbName, word.wordId)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text("查看单词卡片")
-                            }
                         }
-                    } else {
+                    } else if (searchDone) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.fillMaxWidth(),
@@ -901,7 +996,8 @@ fun WordDetailScreen(
                             )
                             Spacer(Modifier.height(12.dp))
                             Text(
-                                "未找到单词 \"$searchKeyword\"",
+                                searchError?.let { "查找失败：$it" }
+                                    ?: "未找到单词 \"$searchKeyword\"",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -921,7 +1017,7 @@ fun WordDetailScreen(
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = RoundedCornerShape(28.dp),
+                shape = GlassShapes.Panel,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
             ) {
                 Column(
@@ -967,7 +1063,7 @@ fun WordDetailScreen(
         ) {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = RoundedCornerShape(28.dp),
+                shape = GlassShapes.Panel,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
@@ -1094,7 +1190,7 @@ private fun DetailSkeleton() {
     ) {
         Card(
             modifier = Modifier.fillMaxWidth().weight(1f),
-            shape = RoundedCornerShape(24.dp),
+            shape = GlassShapes.Card,
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
@@ -1129,9 +1225,9 @@ private fun DetailSkeleton() {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(16.dp)))
-            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(16.dp)))
-            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(16.dp)))
+            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(GlassShapes.Item))
+            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(GlassShapes.Item))
+            ShimmerBox(modifier = Modifier.weight(1f).height(52.dp).clip(GlassShapes.Item))
         }
     }
 }
@@ -1144,40 +1240,55 @@ private fun DetailSkeleton() {
 fun WordStudyScreen(
     dbName: String,
     startWordId: String? = null,
+    reviewQueue: List<String> = emptyList(),
     onBack: () -> Unit,
+    onNavigateToWord: (dbName: String, wordId: String) -> Unit,
 ) {
     val context = LocalContext.current
     var wordIds by remember { mutableStateOf<List<String>?>(null) }
     var loadFailed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(dbName) {
+    // 队列内容参与 key：两次复习数量相同但到期单词不同时也要重新加载
+    LaunchedEffect(dbName, reviewQueue) {
         wordIds = null
         loadFailed = false
-        // openDatabase 可能抛异常，未捕获会崩溃
-        val ids = try {
+        val ids = if (reviewQueue.isNotEmpty()) {
+            reviewQueue
+        } else {
             withContext(Dispatchers.IO) {
                 val db = DatabaseManager.openDatabase(context, dbName)
-                DatabaseManager.getWordList(db).map { it.wordId }
+                try {
+                    DatabaseManager.getWordList(db).map { it.wordId }
+                } finally {
+                    DatabaseManager.release(db)
+                }
             }
-        } catch (_: Exception) {
-            emptyList()
         }
         if (ids.isEmpty()) loadFailed = true else wordIds = ids
     }
 
+    /** 上次背到末尾时回到开头，避免每次进入都停在最后一个单词 */
+    fun savedStartIndex(ids: List<String>): Int {
+        if (ids.isEmpty()) return 0
+        val saved = UserLibrary.studyIndex(dbName)
+        return if (saved >= ids.lastIndex) 0 else saved.coerceIn(0, ids.lastIndex)
+    }
+
     when {
         wordIds != null -> {
-            val ids = wordIds!!
+            val ids = checkNotNull(wordIds) { "词库列表尚未加载完成" }
             // 若指定了起始单词，则从该单词开始；否则读取上次进度。
             // 起始下标必须夹到合法范围：
             // ① 跨词库跳转时 indexOf 返回 -1；
             // ② 回退到的 studyIndex 可能已超出当前词库长度（词库变小 / 切换过词库）。
             // 任何一种都会让下面的 ids[startIdx] 直接越界崩溃。
-            val startIdx = if (startWordId != null) {
+            val startIdx = if (reviewQueue.isNotEmpty()) {
+                0
+            } else if (startWordId != null) {
                 val found = ids.indexOf(startWordId)
-                if (found >= 0) found else UserLibrary.studyIndex(dbName).coerceIn(0, ids.lastIndex)
+                if (found >= 0) found else savedStartIndex(ids)
             } else {
-                UserLibrary.studyIndex(dbName).coerceIn(0, ids.lastIndex)
+                savedStartIndex(ids)
             }
             WordDetailScreen(
                 dbName = dbName,
@@ -1185,6 +1296,7 @@ fun WordStudyScreen(
                 onBack = onBack,
                 wordQueue = ids,
                 startIndex = startIdx,
+                onNavigateToWord = onNavigateToWord,
             )
         }
         loadFailed -> Box(Modifier.fillMaxSize()) {
@@ -1206,20 +1318,13 @@ private fun GlassMiniCard(
     backdrop: Backdrop,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
-    LiquidGlassCard(
+    // 短语与例句数量随词条增长，使用静态磨砂避免每项创建多套离屏缓冲
+    LiquidGlassListItem(
         backdrop = backdrop,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        blurRadius = 8.dp,
-        lensHeight = 8.dp,
-        lensAmount = 14.dp,
-        surfaceColor = Color.White.copy(alpha = 0.18f),
-        shadow = glassShadow(12.dp, 0.12f),
-        highlight = Highlight.Default.copy(alpha = 0.5f),
-        innerShadow = glassInnerShadow(4.dp, 0.08f),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             content = content,
         )
     }

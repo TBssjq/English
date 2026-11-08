@@ -74,9 +74,7 @@ object LibraryRepository {
 
             when (strategy) {
                 ImportConflictStrategy.OVERWRITE -> {
-                    // OVERWRITE 语义是「清空现有数据再导入」：即使导入文件里列表为空，
-                    // 也必须写入空列表以清空旧数据。旧实现用 isNotEmpty() 跳过写入，
-                    // 导致空数据无法覆盖旧数据，与 UI 描述不符。
+                    // 即使导入文件里列表为空，也要写入空列表以清空旧数据
                     UserLibrary.writeList(UserLibrary.KEY_WRONG, data.wrongWords)
                     addedWrong = data.wrongWords.size
                     UserLibrary.writeList(UserLibrary.KEY_FAVORITE, data.favorites)
@@ -85,10 +83,11 @@ object LibraryRepository {
 
                 ImportConflictStrategy.MERGE_DUPLICATE -> {
                     val existingWrong = backupWrong.toMutableList()
-                    val existingWrongKeys = existingWrong.map { "${it.wordId}_${it.dbName}" }.toSet()
+                    // 使用可变集合并在插入时回写，导入文件自身含重复项时不会重复插入
+                    val existingWrongKeys = existingWrong.map { "${it.wordId}_${it.dbName}" }.toMutableSet()
                     data.wrongWords.forEach { entry ->
                         val key = "${entry.wordId}_${entry.dbName}"
-                        if (!existingWrongKeys.contains(key)) {
+                        if (existingWrongKeys.add(key)) {
                             existingWrong.add(entry)
                             addedWrong++
                         }
@@ -96,10 +95,10 @@ object LibraryRepository {
                     UserLibrary.writeList(UserLibrary.KEY_WRONG, existingWrong)
 
                     val existingFav = backupFav.toMutableList()
-                    val existingFavKeys = existingFav.map { "${it.wordId}_${it.dbName}" }.toSet()
+                    val existingFavKeys = existingFav.map { "${it.wordId}_${it.dbName}" }.toMutableSet()
                     data.favorites.forEach { entry ->
                         val key = "${entry.wordId}_${entry.dbName}"
-                        if (!existingFavKeys.contains(key)) {
+                        if (existingFavKeys.add(key)) {
                             existingFav.add(entry)
                             addedFav++
                         } else {
@@ -141,10 +140,7 @@ object LibraryRepository {
         } catch (e: Exception) {
             UserLibrary.writeList(UserLibrary.KEY_WRONG, backupWrong)
             UserLibrary.writeList(UserLibrary.KEY_FAVORITE, backupFav)
-            ImportResult(
-                success = false,
-                message = "导入失败：${e.message ?: "未知错误"}",
-            )
+            throw e
         }
     }
 
@@ -154,7 +150,7 @@ object LibraryRepository {
         val filteredFav = if (contentType == ExportContentType.WRONG_ONLY) emptyList() else fav
         val stats = CheckInManager.stats()
         ExportData(
-            version = 2,
+            version = LibraryFileManager.SCHEMA_VERSION,
             exportTime = System.currentTimeMillis(),
             scope = ExportScope.ALL,
             scopeName = "全部词库",
@@ -176,7 +172,7 @@ object LibraryRepository {
         val filteredWrong = if (contentType == ExportContentType.FAVORITE_ONLY) emptyList() else wrong.filter { it.dbName in dbNames }
         val filteredFav = if (contentType == ExportContentType.WRONG_ONLY) emptyList() else fav.filter { it.dbName in dbNames }
         ExportData(
-            version = 1,
+            version = LibraryFileManager.SCHEMA_VERSION,
             exportTime = System.currentTimeMillis(),
             scope = ExportScope.GROUP,
             scopeName = groupName,
@@ -191,7 +187,7 @@ object LibraryRepository {
         val filteredWrong = if (contentType == ExportContentType.FAVORITE_ONLY) emptyList() else wrong.filter { it.dbName == dbName }
         val filteredFav = if (contentType == ExportContentType.WRONG_ONLY) emptyList() else fav.filter { it.dbName == dbName }
         ExportData(
-            version = 1,
+            version = LibraryFileManager.SCHEMA_VERSION,
             exportTime = System.currentTimeMillis(),
             scope = ExportScope.SINGLE,
             scopeName = dbName,
@@ -202,15 +198,9 @@ object LibraryRepository {
     }
 
     private fun getDbNamesForGroup(groupName: String): Set<String> {
-        return LibraryCatalog.categories
-            .find { it.name == groupName }
-            ?.subcategories
-            ?.flatMap { it.dbFiles }
-            ?.toSet()
-            ?: emptySet()
-    }
-
-    fun init(context: Context) {
-        UserLibrary.init(context)
+        val category = checkNotNull(LibraryCatalog.categories.find { it.name == groupName }) {
+            "导出分组不存在: $groupName"
+        }
+        return category.subcategories.flatMap { it.dbFiles }.toSet()
     }
 }

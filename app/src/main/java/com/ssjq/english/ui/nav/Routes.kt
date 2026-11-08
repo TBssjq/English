@@ -14,8 +14,12 @@ data class WordListRoute(val dbName: String)
 /** 单词详情 / 学习卡片页 */
 data class WordDetailRoute(val dbName: String, val wordId: String)
 
-/** 背诵会话页：遍历整个词库的全部单词（可指定起始单词） */
-data class WordStudyRoute(val dbName: String, val startWordId: String? = null)
+/** 背诵会话页：默认遍历整本词库；reviewQueue 非空时只复习指定到期单词 */
+data class WordStudyRoute(
+    val dbName: String,
+    val startWordId: String? = null,
+    val reviewQueue: List<String> = emptyList(),
+)
 
 /** 快速测验页：mode=null 时 4 种模式随机切换；非 null 时固定该模式 */
 data class QuizRoute(val dbName: String, val count: Int = 20, val mode: String? = null, val sourceWords: List<com.ssjq.english.data.WordDetail> = emptyList())
@@ -32,8 +36,8 @@ data class LibraryRoute(val dbName: String, val type: LibraryType)
 /** 疯狂刷题题源类型 */
 enum class CrazyQuizSource { WRONG, FAVORITE, LIBRARY }
 
-/** 疯狂刷题路由 */
-data class CrazyQuizRoute(val dbName: String, val source: CrazyQuizSource, val count: Int)
+/** 疯狂刷题路由：题源与词库由页面内部选择 */
+object CrazyQuizRoute
 
 /** 每日打卡页：学习统计 / 连续天数 / 贡献热力图（即「成就」页） */
 object CheckInRoute

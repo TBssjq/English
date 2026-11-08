@@ -16,11 +16,14 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.School
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -44,14 +47,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.LocalAppBackdrop
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
+import com.ssjq.english.data.WordDetail
 import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassListItem
 import kotlin.math.roundToInt
 
 /**
@@ -62,6 +67,8 @@ fun ResultScreen(
     correctCount: Int,
     totalCount: Int,
     wrongWords: Int,
+    wrongWordList: List<WordDetail>,
+    onOpenWord: (WordDetail) -> Unit,
     modeStats: Map<QuizMode, Pair<Int, Int>>,
     onRestart: () -> Unit,
     onReviewWrong: () -> Unit,
@@ -78,53 +85,10 @@ fun ResultScreen(
         else -> "别灰心，多练习就好！🌱"
     }
 
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     Box(modifier = modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .offset(x = (-30).dp, y = 80.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 40.dp, y = 160.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(120.dp)
-                    .offset(x = 40.dp, y = 400.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Column(
         modifier = Modifier.fillMaxSize().padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -252,7 +216,58 @@ fun ResultScreen(
             }
         }
 
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(24.dp))
+
+        // 答错的单词：每个条目都可进入对应单词卡片
+        if (wrongWordList.isNotEmpty()) {
+            Text(
+                "答错的单词 · 点击查看详情",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(wrongWordList, key = { "${it.dbName}-${it.wordId}" }) { word ->
+                    LiquidGlassListItem(
+                        backdrop = liquidBackdrop,
+                        onClick = { onOpenWord(word) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    word.headWord,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
 
         // 操作按钮
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

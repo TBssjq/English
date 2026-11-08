@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -20,21 +19,21 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.EmojiEvents
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +62,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.ssjq.english.ui.glass.GlassQuality
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalGlassPalette
 import com.ssjq.english.ui.nav.MainTab
 import kotlin.math.roundToInt
 import com.kyant.backdrop.Backdrop
@@ -75,25 +77,14 @@ import com.kyant.backdrop.highlight.HighlightStyle
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 
-/**
- * 玻璃表面默认色。
- *
- * 深色模式下背景本身很暗，玻璃需要略高的白色底 + 更强的边缘高光才能看出"玻璃感"，
- * 因此深色取 0.14、浅色取 0.22（比常规毛玻璃更透亮，突出折射效果）。
- */
+/** 玻璃表面默认色，明暗取自用户当前主题的实际配色。 */
 @Composable
-internal fun defaultGlassSurfaceColor(): Color =
-    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.22f)
+internal fun defaultGlassSurfaceColor(): Color = LocalGlassPalette.current.surfaceTint
 
-/**
- * 边缘高光。深色模式下加宽 + 提亮，让玻璃在暗背景中勾出清晰轮廓；
- * 浅色模式下保持细腻，避免边缘发白糊边。
- *
- * @param alpha 高光强度，深色模式下会被放大
- */
+/** 边缘高光：深色模式下加宽提亮，在暗背景中勾出清晰轮廓。 */
 @Composable
 internal fun glassHighlight(alpha: Float = 1f): Highlight {
-    return if (isSystemInDarkTheme()) {
+    return if (LocalGlassPalette.current.isDark) {
         Highlight(
             width = 1.6.dp,
             blurRadius = 0.9.dp,
@@ -105,22 +96,14 @@ internal fun glassHighlight(alpha: Float = 1f): Highlight {
     }
 }
 
-/**
- * 深色模式下玻璃外发光：用高亮色的外阴影模拟"透光"，
- * 让玻璃在夜间看起来是发光的，而不是一块死黑半透明板。
- */
+/** 外阴影：浅色模式用黑色，深色模式用白色形成透光感。 */
 @Composable
-internal fun glassGlow(radius: Dp = 24.dp): Shadow? {
-    return if (isSystemInDarkTheme()) {
-        Shadow(
-            radius = radius,
-            offset = DpOffset(0.dp, 0.dp),
-            color = Color.White.copy(alpha = 0.16f),
-        )
-    } else {
-        Shadow(radius = radius, color = Color.Black.copy(alpha = 0.18f))
-    }
-}
+internal fun glassGlow(radius: Dp = 24.dp): Shadow? =
+    Shadow(
+        radius = radius,
+        offset = DpOffset(0.dp, 0.dp),
+        color = LocalGlassPalette.current.glowColor,
+    )
 
 /**
  * 构造阴影。
@@ -160,7 +143,7 @@ internal fun glassInnerShadow(radius: Dp, alpha: Float): InnerShadow =
 fun LiquidGlassCard(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(20.dp),
+    shape: Shape = GlassShapes.Card,
     blurRadius: Dp = 10.dp,
     lensHeight: Dp = 20.dp,
     lensAmount: Dp = 34.dp,
@@ -174,6 +157,9 @@ fun LiquidGlassCard(
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    // shape lambda 必须稳定：ShapeProvider 以它为相等性依据，
+    // 每次重组新建会触发 DrawBackdropNode 重建全部 RenderEffect
+    val shapeBlock = remember(shape) { { shape } }
     Box(
         modifier = modifier
             .then(
@@ -186,11 +172,13 @@ fun LiquidGlassCard(
             )
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { shape },
+                shape = shapeBlock,
                 effects = {
-                    if (enableVibrancy) colorControls(saturation = 1.8f)
-                    blur(blurRadius.toPx())
-                    if (enableLens) {
+                    if (enableVibrancy && GlassQuality.vibrancyEnabled) {
+                        colorControls(saturation = 1.8f)
+                    }
+                    blur(blurRadius.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (enableLens && GlassQuality.lensEnabled) {
                         lens(
                             refractionHeight = lensHeight.toPx(),
                             refractionAmount = lensAmount.toPx(),
@@ -227,7 +215,7 @@ fun LiquidGlassListItem(
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val dark = isSystemInDarkTheme()
+    val palette = LocalGlassPalette.current
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -236,14 +224,12 @@ fun LiquidGlassListItem(
                     Modifier.clickable(role = Role.Button, onClick = onClick)
                 } else Modifier
             )
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                color = if (dark) Color.White.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.46f)
-            )
+            .clip(GlassShapes.Item)
+            .background(color = palette.listSurface)
             .border(
                 width = 1.dp,
-                color = if (dark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp),
+                color = palette.listBorder,
+                shape = GlassShapes.Item,
             ),
         content = content,
     )
@@ -256,34 +242,34 @@ fun LiquidGlassListItem(
 fun LiquidGlassSearchBar(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
-    surfaceColor: Color = if (isSystemInDarkTheme()) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.30f)
-    } else {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.45f)
-    },
+    surfaceColor: Color? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val palette = LocalGlassPalette.current
+    val resolvedSurfaceColor = surfaceColor ?: palette.searchSurface
     val highlight = glassHighlight(0.7f)
     val glow = glassGlow(18.dp)
     Box(
         modifier = modifier
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedCornerShape(28.dp) },
+                shape = GlassShapes.FieldBlock,
                 effects = {
-                    colorControls(saturation = 1.8f)
-                    blur(11.dp.toPx())
-                    lens(
-                        refractionHeight = 14.dp.toPx(),
-                        refractionAmount = 24.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
+                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
+                    blur(11.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) {
+                        lens(
+                            refractionHeight = 14.dp.toPx(),
+                            refractionAmount = 24.dp.toPx(),
+                            depthEffect = true,
+                            chromaticAberration = true,
+                        )
+                    }
                 },
                 highlight = { highlight },
                 shadow = { glow },
                 onDrawSurface = {
-                    drawRect(surfaceColor)
+                    drawRect(resolvedSurfaceColor)
                 },
             ),
         content = content,
@@ -308,16 +294,18 @@ fun LiquidGlassBadge(
             .size(size)
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { CircleShape },
+                shape = GlassShapes.CircleBlock,
                 effects = {
-                    colorControls(saturation = 1.8f)
-                    blur(5.dp.toPx())
-                    lens(
-                        refractionHeight = 8.dp.toPx(),
-                        refractionAmount = 18.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
+                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
+                    blur(5.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) {
+                        lens(
+                            refractionHeight = 8.dp.toPx(),
+                            refractionAmount = 18.dp.toPx(),
+                            depthEffect = true,
+                            chromaticAberration = true,
+                        )
+                    }
                 },
                 highlight = { highlight },
                 shadow = { glow },
@@ -337,40 +325,58 @@ fun LiquidGlassBadge(
 fun LiquidGlassDialogSurface(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
-    surfaceColor: Color = if (isSystemInDarkTheme()) {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.62f)
-    } else {
-        MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
-    },
+    surfaceColor: Color? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val palette = LocalGlassPalette.current
+    val resolvedSurfaceColor = surfaceColor ?: palette.dialogSurface
     val highlight = glassHighlight()
     val glow = glassGlow(40.dp)
     Column(
         modifier = modifier
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedCornerShape(28.dp) },
+                shape = GlassShapes.PanelBlock,
                 effects = {
-                    colorControls(saturation = 1.9f)
-                    blur(16.dp.toPx())
-                    lens(
-                        refractionHeight = 22.dp.toPx(),
-                        refractionAmount = 36.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
+                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.9f)
+                    blur(16.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) {
+                        lens(
+                            refractionHeight = 22.dp.toPx(),
+                            refractionAmount = 36.dp.toPx(),
+                            depthEffect = true,
+                            chromaticAberration = true,
+                        )
+                    }
                 },
                 highlight = { highlight },
                 shadow = { glow },
                 innerShadow = { glassInnerShadow(14.dp, 0.16f) },
                 onDrawSurface = {
-                    drawRect(surfaceColor)
+                    drawRect(resolvedSurfaceColor)
                 },
             )
             .padding(24.dp),
         content = content,
     )
+}
+
+/**
+ * 玻璃弹窗正文：文本过长时在固定高度内滚动。
+ *
+ * 弹窗是居中定高的玻璃面板，正文直接堆在 Column 里时，
+ * 更新说明或公告条目一多就会把底部的操作按钮顶出屏幕。
+ */
+@Composable
+fun GlassDialogBody(text: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = 320.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Text(text, style = MaterialTheme.typography.bodyMedium)
+    }
 }
 
 /**
@@ -436,7 +442,7 @@ fun LiquidGlassDialog(
         label = "glassDialogAlpha",
     )
 
-    val dimColor = if (isSystemInDarkTheme()) {
+    val dimColor = if (LocalGlassPalette.current.isDark) {
         Color.Black.copy(alpha = 0.48f)
     } else {
         Color(0xFF1A1A2E).copy(alpha = 0.26f)
@@ -476,74 +482,38 @@ fun LiquidGlassDialog(
 }
 
 /**
- * 玻璃顶部栏：替代 Material3 TopAppBar 的纯色容器，
- * 背景随内容滚动呈现毛玻璃质感。
- */
-@Composable
-fun LiquidGlassTopAppBar(
-    backdrop: Backdrop,
-    modifier: Modifier = Modifier,
-    height: Dp = 64.dp,
-    content: @Composable BoxScope.() -> Unit,
-) {
-    val surface = defaultGlassSurfaceColor()
-    val highlight = glassHighlight(0.6f)
-    val glow = glassGlow(20.dp)
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .height(height)
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = { RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp) },
-                effects = {
-                    colorControls(saturation = 1.8f)
-                    blur(14.dp.toPx())
-                    lens(
-                        refractionHeight = 12.dp.toPx(),
-                        refractionAmount = 22.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                onDrawSurface = {
-                    drawRect(surface)
-                },
-            ),
-        content = content,
-    )
-}
-
-/**
  * 玻璃底部操作栏：适合详情页底部按钮区。
+ *
+ * @param shape 默认贴合屏幕底边（只有上边圆角）；悬浮在页面内部时传 [GlassShapes.Panel]
  */
 @Composable
 fun LiquidGlassBottomBar(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
+    shape: Shape = GlassShapes.BottomBar,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val surface = defaultGlassSurfaceColor()
     val highlight = glassHighlight(0.6f)
     val glow = glassGlow(24.dp)
+    val shapeBlock = remember(shape) { { shape } }
     Box(
         modifier = modifier
             .fillMaxWidth()
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp) },
+                shape = shapeBlock,
                 effects = {
-                    colorControls(saturation = 1.8f)
-                    blur(15.dp.toPx())
-                    lens(
-                        refractionHeight = 14.dp.toPx(),
-                        refractionAmount = 24.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
+                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
+                    blur(15.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) {
+                        lens(
+                            refractionHeight = 14.dp.toPx(),
+                            refractionAmount = 24.dp.toPx(),
+                            depthEffect = true,
+                            chromaticAberration = true,
+                        )
+                    }
                 },
                 highlight = { highlight },
                 shadow = { glow },
@@ -573,16 +543,18 @@ fun LiquidGlassToast(
         modifier = modifier
             .drawBackdrop(
                 backdrop = backdrop,
-                shape = { RoundedCornerShape(24.dp) },
+                shape = GlassShapes.CardBlock,
                 effects = {
-                    colorControls(saturation = 1.7f)
-                    blur(9.dp.toPx())
-                    lens(
-                        refractionHeight = 12.dp.toPx(),
-                        refractionAmount = 22.dp.toPx(),
-                        depthEffect = true,
-                        chromaticAberration = true,
-                    )
+                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.7f)
+                    blur(9.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                    if (GlassQuality.lensEnabled) {
+                        lens(
+                            refractionHeight = 12.dp.toPx(),
+                            refractionAmount = 22.dp.toPx(),
+                            depthEffect = true,
+                            chromaticAberration = true,
+                        )
+                    }
                 },
                 highlight = { highlight },
                 shadow = { glow },
@@ -607,7 +579,7 @@ fun LiquidGlassToast(
 }
 
 private fun MainTab.icon(): ImageVector = when (this) {
-    MainTab.STUDY -> Icons.Filled.MenuBook
+    MainTab.STUDY -> Icons.AutoMirrored.Filled.MenuBook
     MainTab.ACHIEVEMENT -> Icons.Filled.EmojiEvents
     MainTab.ABOUT -> Icons.Filled.Person
 }
@@ -697,16 +669,18 @@ fun LiquidGlassBottomNavigation(
                 }
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { RoundedCornerShape(32.dp) },
+                    shape = GlassShapes.PanelBlock,
                     effects = {
-                        colorControls(saturation = 1.9f)
-                        blur(16.dp.toPx())
-                        lens(
-                            refractionHeight = 20.dp.toPx(),
-                            refractionAmount = 34.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
+                        if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.9f)
+                        blur(16.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                        if (GlassQuality.lensEnabled) {
+                            lens(
+                                refractionHeight = 20.dp.toPx(),
+                                refractionAmount = 34.dp.toPx(),
+                                depthEffect = true,
+                                chromaticAberration = true,
+                            )
+                        }
                     },
                     highlight = { barHighlight },
                     shadow = { barGlow },
@@ -735,16 +709,18 @@ fun LiquidGlassBottomNavigation(
                 .padding(horizontal = 4.dp)
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { RoundedCornerShape(percent = 50) },
+                    shape = GlassShapes.PillBlock,
                     effects = {
-                        colorControls(saturation = 2.1f)
-                        blur(10.dp.toPx())
-                        lens(
-                            refractionHeight = 18.dp.toPx(),
-                            refractionAmount = 30.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
+                        if (GlassQuality.vibrancyEnabled) colorControls(saturation = 2.1f)
+                        blur(10.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                        if (GlassQuality.lensEnabled) {
+                            lens(
+                                refractionHeight = 18.dp.toPx(),
+                                refractionAmount = 30.dp.toPx(),
+                                depthEffect = true,
+                                chromaticAberration = true,
+                            )
+                        }
                     },
                     highlight = { indicatorHighlight },
                     shadow = { indicatorGlow },
@@ -772,7 +748,7 @@ private fun GlassTabLabel(
 
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(22.dp))
+            .clip(GlassShapes.Card)
             .clickable(role = Role.Tab, onClick = onClick)
             .padding(vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

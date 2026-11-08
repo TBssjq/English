@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
@@ -180,7 +181,7 @@ private class DrawBackdropElement(
         node.onDrawBackdrop = onDrawBackdrop
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
-        node.invalidateDrawCache()
+        node.markDirty()
     }
 
     override fun InspectorInfo.inspectableProperties() {
@@ -255,11 +256,16 @@ private class DrawBackdropNode(
         compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
     }
 
-    // 普通字段即可：最新坐标由 onGloballyPositioned 写入，并在写入后
-    // 主动 invalidateDraw() 触发重绘。
-    // 若仍用 mutableStateOf，写入会尝试触发重组，而 重组 → 布局 → onGloballyPositioned
-    // 会形成同步递归（这就是为什么此前必须加 0.5px 阈值来兜底）。
     private var layoutCoordinates: LayoutCoordinates? = null
+
+    // 窗口位置缓存：只在位置真正变化时才重录背景采样并请求重绘。
+    private var lastWindowX = Float.NaN
+    private var lastWindowY = Float.NaN
+
+    // 背景采样是否过期。坐标、尺寸、效果参数变化时置为 true。
+    private var backdropDirty = true
+
+    private var effectsDirty = true
 
     private var padding by mutableFloatStateOf(0f)
 
@@ -284,25 +290,26 @@ private class DrawBackdropNode(
         }
     }
 
+    /** 重新采样背景到离屏层。仅在 backdropDirty 时调用。 */
+    private fun DrawScope.recordBackdropLayer() {
+        val layer = graphicsLayer ?: return
+        val padding = padding
+        recordLayer(
+            layer,
+            size = IntSize(
+                size.width.toInt() + padding.toInt() * 2,
+                size.height.toInt() + padding.toInt() * 2
+            ),
+            block = recordBackdropBlock
+        )
+        layer.topLeft =
+            if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt())
+            else IntOffset.Zero
+    }
+
+    /** 把已采样的离屏层画到画布，不触发重新录制。 */
     private val drawBackdropLayer: DrawScope.() -> Unit = {
-        val layer = graphicsLayer
-        if (layer != null) {
-            val padding = padding
-
-            recordLayer(
-                layer,
-                size = IntSize(
-                    size.width.toInt() + padding.toInt() * 2,
-                    size.height.toInt() + padding.toInt() * 2
-                ),
-                block = recordBackdropBlock
-            )
-
-            layer.topLeft =
-                if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt())
-                else IntOffset.Zero
-            drawLayer(layer)
-        }
+        graphicsLayer?.let { drawLayer(it) }
     }
 
     override fun MeasureScope.measure(
@@ -316,8 +323,19 @@ private class DrawBackdropNode(
     }
 
     override fun ContentDrawScope.draw() {
+        if (effectsDirty) {
+            observeEffects()
+            effectsDirty = false
+        }
+        // 尺寸或密度变化会改变效果链与采样区域的输入，必须重建并重录
         if (effectScope.update(this)) {
-            updateEffects()
+            observeEffects()
+            backdropDirty = true
+        }
+
+        val needsRecord = backdropDirty
+        if (needsRecord) {
+            recordBackdropLayer()
         }
 
         onDrawBehind?.invoke(this)
@@ -326,39 +344,45 @@ private class DrawBackdropNode(
         drawContent()
         onDrawFront?.invoke(this)
 
-        exportedBackdrop?.graphicsLayer?.let { layer ->
-            recordLayer(layer) {
-                onDrawBehind?.invoke(this)
-                drawBackdropLayer()
-                onDrawSurface?.invoke(this)
-                onDrawFront?.invoke(this)
+        if (needsRecord) {
+            exportedBackdrop?.graphicsLayer?.let { layer ->
+                recordLayer(layer) {
+                    onDrawBehind?.invoke(this)
+                    drawBackdropLayer()
+                    onDrawSurface?.invoke(this)
+                    onDrawFront?.invoke(this)
+                }
             }
+            backdropDirty = false
         }
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
-        if (coordinates.isAttached) {
-            if (backdrop.isCoordinatesDependent) {
-                layoutCoordinates = coordinates
-            } else {
-                layoutCoordinates = null
-            }
-            exportedBackdrop?.layerCoordinates = coordinates
-            // 关键：坐标变化后必须主动请求重绘。
-            // 本节点 shouldAutoInvalidate=false，且不依赖 state 触发重绘，
-            // 因此慢速滚动（单帧位移小于旧 0.5px 阈值）时玻璃会定格不动。
-            // invalidateDraw() 只标记绘制失效，不触发重组/布局，
-            // 因而不会再次回调本方法，无递归风险。
-            invalidateDraw()
-        }
+        if (!coordinates.isAttached) return
+        val position = coordinates.positionInWindow()
+        // 位置未变化时既不重录也不请求重绘：静止界面的玻璃保持上一帧采样结果
+        if (position.x == lastWindowX && position.y == lastWindowY) return
+        lastWindowX = position.x
+        lastWindowY = position.y
+        layoutCoordinates = if (backdrop.isCoordinatesDependent) coordinates else null
+        exportedBackdrop?.layerCoordinates = coordinates
+        backdropDirty = true
+        invalidateDraw()
     }
 
     override fun onObservedReadsChanged() {
-        invalidateDrawCache()
+        effectsDirty = true
+        invalidateDraw()
     }
 
     fun invalidateDrawCache() {
-        observeEffects()
+        markDirty()
+    }
+
+    fun markDirty() {
+        backdropDirty = true
+        effectsDirty = true
+        invalidateDraw()
     }
 
     private fun observeEffects() {
@@ -369,15 +393,19 @@ private class DrawBackdropNode(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             effectScope.apply(effects)
             graphicsLayer?.renderEffect = effectScope.renderEffect?.asComposeRenderEffect()
-            padding = effectScope.padding
+            // padding 决定离屏层的尺寸，变化时必须重新录制采样区域
+            if (padding != effectScope.padding) {
+                padding = effectScope.padding
+                backdropDirty = true
+            }
         }
     }
 
     override fun onAttach() {
         val graphicsContext = requireGraphicsContext()
         graphicsLayer = graphicsContext.createGraphicsLayer()
-
-        observeEffects()
+        backdropDirty = true
+        effectsDirty = true
     }
 
     override fun onDetach() {

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
@@ -42,15 +43,18 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
@@ -77,6 +81,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ssjq.english.R
 import com.ssjq.english.data.CheckInManager
+import com.ssjq.english.data.ReviewScheduler
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.LibraryCategory
@@ -86,7 +91,15 @@ import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.UserManager
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.common.FancyToast
+import com.ssjq.english.ui.common.LiquidGlassListItem
+import com.ssjq.english.ui.glass.GlassQuality
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
+import com.ssjq.english.ui.common.performExport
+import com.ssjq.english.ui.common.performImport
 import com.ssjq.english.ui.glass.Capsule
 import com.ssjq.english.ui.glass.LiquidButton
 import com.ssjq.english.ui.glass.LiquidCard
@@ -106,6 +119,8 @@ fun HomeScreen(
     onOpenCheckIn: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenCrazyQuiz: () -> Unit = {},
+    onStartReview: (String, List<String>) -> Unit,
+    onStartStudy: (String) -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -136,6 +151,7 @@ fun HomeScreen(
     var editedOrder by remember { mutableStateOf<List<String>>(emptyList()) }
     // 导出数据弹窗
     var showExportDialog by remember { mutableStateOf(false) }
+    var importExportMessage by remember { mutableStateOf<String?>(null) }
     // 修改用户名弹窗
     var showUsernameDialog by remember { mutableStateOf(false) }
     var currentUsername by remember { mutableStateOf(UserManager.getUsername() ?: "") }
@@ -143,6 +159,8 @@ fun HomeScreen(
     var usernameError by remember { mutableStateOf("") }
     // 主题模式 - 响应式观察 Flow 变化
     val darkThemeMode by UserManager.darkThemeFlow.collectAsState()
+    // 玻璃特效开关 - 响应式观察 Flow 变化
+    val glassEffect by UserManager.glassEffectFlow.collectAsState()
 
     LaunchedEffect(Unit) {
         allDbs = withContext(Dispatchers.IO) { DatabaseManager.listAssetDatabases(context) }
@@ -176,12 +194,22 @@ fun HomeScreen(
     // 并在从打卡/学习页返回主页时刷新（学习行为会触发自动打卡）
     val homeScope = rememberCoroutineScope()
     var checkInStats by remember { mutableStateOf(CheckInManager.EmptyStats) }
+    var dueReviewIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var dailyGoal by remember { mutableStateOf(UserManager.getDailyGoal()) }
+    var showGoalPicker by remember { mutableStateOf(false) }
     fun refreshCheckInStats() {
         homeScope.launch {
-            withContext(Dispatchers.IO) { checkInStats = CheckInManager.stats() }
+            // IO 线程只负责取值，状态回到主线程赋值
+            val snapshot = withContext(Dispatchers.IO) {
+                val book = UserManager.getCurrentBook()
+                val due = if (book != null) ReviewScheduler.dueWordIds(book) else emptyList()
+                CheckInManager.stats() to due
+            }
+            checkInStats = snapshot.first
+            dueReviewIds = snapshot.second
         }
     }
-    LaunchedEffect(Unit) { refreshCheckInStats() }
+    LaunchedEffect(currentBook) { refreshCheckInStats() }
     val homeLifecycle = LocalLifecycleOwner.current
     DisposableEffect(homeLifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -231,8 +259,8 @@ fun HomeScreen(
     }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
-    // 液态玻璃：背景采样源，玻璃卡片将折射/模糊它
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     // 选定 / 切换当前学习词库，并进入该词库
     fun pickBook(db: String) {
@@ -249,54 +277,13 @@ fun HomeScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑（玻璃折射的采样源）
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(220.dp)
-                    .offset(x = (-50).dp, y = 140.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 70.dp, y = 280.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)),
-            )
-            Box(
-                Modifier
-                    .size(150.dp)
-                    .offset(x = 60.dp, y = 520.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
-            )
-        }
-
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             containerColor = Color.Transparent,
             topBar = {
                 TopAppBar(
+                    modifier = Modifier.glassTopBar(liquidBackdrop),
+                    colors = glassTopBarColors(),
                     title = {
                         if (isEditingOrder) {
                             Text("调整分类顺序", fontWeight = FontWeight.Bold)
@@ -374,80 +361,140 @@ fun HomeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
             ) {
-                // 深色模式：顶部迷你设置条（三态：跟随系统 / 深色 / 浅色）
+                // 顶部迷你设置条：深色模式（三态）+ 玻璃特效开关
                 if (showEntryCards) item {
                     // lambda 必须稳定：LiquidToggle 内部以 selected 为 LaunchedEffect 的 key，
                     // 每次重组新建 lambda 会导致内部状态/动画被反复重置
                     val toggleSelected = remember { { darkThemeMode == true } }
                     val toggleOnSelect = remember { { v: Boolean -> UserManager.setDarkThemeMode(v) } }
+                    val glassToggleSelected = remember { { glassEffect } }
+                    val glassToggleOnSelect = remember {
+                        { v: Boolean ->
+                            UserManager.setGlassEffectEnabled(v)
+                            GlassQuality.setEffectsEnabled(v)
+                        }
+                    }
                     LiquidCard(
                         backdrop = liquidBackdrop,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Filled.DarkMode,
-                                contentDescription = "深色模式",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "深色模式",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                when (darkThemeMode) {
-                                    true -> "深色"
-                                    false -> "浅色"
-                                    null -> "跟随系统"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.weight(1f))
-                            if (darkThemeMode != null) {
-                                TextButton(
-                                    onClick = { UserManager.setDarkThemeMode(null) },
-                                    modifier = Modifier.height(32.dp),
-                                ) {
-                                    Text("自动", style = MaterialTheme.typography.labelSmall)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Filled.DarkMode,
+                                    contentDescription = "深色模式",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "深色模式",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    when (darkThemeMode) {
+                                        true -> "深色"
+                                        false -> "浅色"
+                                        null -> "跟随系统"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.weight(1f))
+                                if (darkThemeMode != null) {
+                                    TextButton(
+                                        onClick = { UserManager.setDarkThemeMode(null) },
+                                        modifier = Modifier.height(32.dp),
+                                    ) {
+                                        Text("自动", style = MaterialTheme.typography.labelSmall)
+                                    }
                                 }
+                                LiquidToggle(
+                                    selected = toggleSelected,
+                                    onSelect = toggleOnSelect,
+                                    backdrop = liquidBackdrop,
+                                )
                             }
-                            LiquidToggle(
-                                selected = toggleSelected,
-                                onSelect = toggleOnSelect,
-                                backdrop = liquidBackdrop,
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                             )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Filled.BlurOn,
+                                    contentDescription = "玻璃特效",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "玻璃特效",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (glassEffect) "折射与色散" else "已关闭",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.weight(1f))
+                                LiquidToggle(
+                                    selected = glassToggleSelected,
+                                    onSelect = glassToggleOnSelect,
+                                    backdrop = liquidBackdrop,
+                                )
+                            }
                         }
                     }
                 }
 
                 // 当前学习词库 + 开始学习：提升到列表最前，确保首屏即可点击，无需滚动
                 if (currentBook != null && !showFullCatalog) item {
+                    val book = currentBook
                     CurrentBookPanel(
                         backdrop = liquidBackdrop,
-                        dbName = currentBook!!,
-                        onStartStudy = { pickBook(currentBook!!) },
+                        dbName = book,
+                        dueCount = dueReviewIds.size,
+                        onStartStudy = {
+                            UserManager.setCurrentBook(book)
+                            onStartStudy(book)
+                        },
+                        onStartReview = { onStartReview(book, dueReviewIds) },
                         onBrowseAll = { showAllBooks = true },
                     )
                 }
 
-                // 仪表盘：液态玻璃按钮，点击可修改用户名
+                // 仪表盘：点击直接进入当前词库的背诵，修改用户名走右侧铅笔图标
                 if (showEntryCards) item {
                     LiquidButton(
-                        onClick = { openEditUsername() },
+                        onClick = {
+                            val book = currentBook
+                            if (book != null) {
+                                UserManager.setCurrentBook(book)
+                                onStartStudy(book)
+                            } else {
+                                // 老用户还没有当前词库，先展开分类表让其选择
+                                showAllBooks = true
+                            }
+                        },
                         backdrop = liquidBackdrop,
                         height = 104.dp,
                         modifier = Modifier
@@ -456,7 +503,7 @@ fun HomeScreen(
                     ) {
                         Image(
                             painter = painterResource(R.drawable.walnut_body),
-                            contentDescription = "修改用户名",
+                            contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .size(56.dp)
@@ -476,10 +523,47 @@ fun HomeScreen(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            Text(
-                                "共收录 ${allDbs.size} 个词库，点击下方任意词库开始学习",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            val todayWords = checkInStats.todayRecord?.wordsLearned ?: 0
+                            val goalReached = todayWords >= dailyGoal
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "今日 $todayWords / $dailyGoal 词",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (goalReached) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    if (goalReached) "已达标 · 调整" else "调整目标",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .clip(GlassShapes.Tag)
+                                        .clickable { showGoalPicker = true }
+                                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = {
+                                    (todayWords.toFloat() / dailyGoal).coerceIn(0f, 1f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(4.dp)
+                                    .clip(GlassShapes.Tag),
+                                color = if (goalReached) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.secondary
+                                },
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
                             )
                         }
                         Spacer(Modifier.width(8.dp))
@@ -487,7 +571,15 @@ fun HomeScreen(
                             Icons.Filled.Edit,
                             contentDescription = "修改用户名",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                // 内层消费点击，外层开始背诵不会被连带触发
+                                .clickable(
+                                    interactionSource = null,
+                                    indication = null,
+                                ) { openEditUsername() }
+                                .padding(8.dp)
+                                .size(20.dp),
                         )
                     }
                 }
@@ -884,7 +976,67 @@ fun HomeScreen(
         com.ssjq.english.ui.common.ImportExportDialog(
             visible = showExportDialog,
             onDismiss = { showExportDialog = false },
-            onResult = { },
+            onExportRequested = { uri, scope, groupName, dbName, contentType ->
+                homeScope.launch {
+                    val message = withContext(Dispatchers.IO) {
+                        performExport(context, uri, scope, groupName, dbName, contentType)
+                    }
+                    importExportMessage = message
+                }
+            },
+            onImportConfirmed = { uri, strategy ->
+                homeScope.launch {
+                    val message = withContext(Dispatchers.IO) {
+                        performImport(context, uri, strategy)
+                    }
+                    importExportMessage = message
+                }
+            },
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        FancyToast(
+            message = importExportMessage.orEmpty(),
+            visible = importExportMessage != null,
+            onDismiss = { importExportMessage = null },
+            backdrop = liquidBackdrop,
+        )
+    }
+
+    // 每日学习目标：今日学习量已记录在打卡数据里，这里只调整目标值
+    if (showGoalPicker) {
+        AlertDialog(
+            onDismissRequest = { showGoalPicker = false },
+            title = { Text("每日学习目标", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    UserManager.DAILY_GOAL_OPTIONS.forEach { option ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(GlassShapes.Item)
+                                .clickable {
+                                    UserManager.setDailyGoal(option)
+                                    dailyGoal = option
+                                    showGoalPicker = false
+                                }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = option == dailyGoal, onClick = null)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "$option 词 / 天",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showGoalPicker = false }) { Text("关闭") }
+            },
         )
     }
 
@@ -903,7 +1055,7 @@ fun HomeScreen(
                         modifier = Modifier.fillMaxWidth(),
                         placeholder = { Text("输入新用户名") },
                         textStyle = MaterialTheme.typography.titleMedium,
-                        shape = RoundedCornerShape(12.dp),
+                        shape = GlassShapes.Tag,
                         colors = TextFieldDefaults.colors(
                             focusedIndicatorColor = MaterialTheme.colorScheme.primary,
                             unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
@@ -958,7 +1110,7 @@ private fun OrderableCategoryItem(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(18.dp),
+        shape = GlassShapes.Card,
         blurRadius = 4.dp,
         lensHeight = 10.dp,
         lensAmount = 16.dp,
@@ -1017,60 +1169,64 @@ private fun WordSearchResultCard(
     onClick: () -> Unit,
     backdrop: Backdrop,
 ) {
-    LiquidButton(
-        onClick = onClick,
+    // 搜索结果可能有几十项，每项使用静态磨砂，避免同屏创建几十套离屏缓冲
+    LiquidGlassListItem(
         backdrop = backdrop,
-        height = 68.dp,
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(38.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.tertiaryContainer),
-            contentAlignment = Alignment.Center,
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.MenuBook,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.size(20.dp),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                item.headWord,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            item.tranCn?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.tertiaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.MenuBook,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.size(20.dp),
                 )
             }
-        }
-        Spacer(Modifier.width(8.dp))
-        // 所属词库标签
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = MaterialTheme.colorScheme.secondaryContainer,
-        ) {
-            Text(
-                item.dbName,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    item.headWord,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                item.tranCn?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Surface(
+                shape = GlassShapes.Item,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+            ) {
+                Text(
+                    item.dbName,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -1087,35 +1243,40 @@ private fun CategoryHeader(
     val totalDbs = category.subcategories.sumOf { it.dbFiles.size }
     val totalWords = category.subcategories.flatMap { it.dbFiles }.sumOf { wordCounts[it] ?: 0 }
     val allLoaded = category.subcategories.flatMap { it.dbFiles }.all { it in wordCounts }
-    LiquidButton(
-        onClick = onClick,
+    // 分类标题属于列表项，使用轻量玻璃避免每项都创建多层 GraphicsLayer
+    LiquidGlassListItem(
         backdrop = backdrop,
-        height = 62.dp,
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                category.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                if (allLoaded && totalWords > 0) "$totalWords 词 · $totalDbs 库"
-                else "$totalDbs 个词库",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    category.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    if (allLoaded && totalWords > 0) "$totalWords 词 · $totalDbs 库"
+                    else "$totalDbs 个词库",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp).rotate(if (expanded) 180f else 0f),
             )
         }
-        Spacer(Modifier.width(8.dp))
-        Icon(
-            Icons.Filled.ExpandMore,
-            contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(24.dp).rotate(if (expanded) 180f else 0f),
-        )
     }
 }
 
@@ -1130,42 +1291,47 @@ private fun SubcategoryCard(
 ) {
     val totalWords = subcategory.dbFiles.sumOf { wordCounts[it] ?: 0 }
     val allLoaded = subcategory.dbFiles.all { it in wordCounts }
-    LiquidButton(
-        onClick = onClick,
+    // 子分类同属列表项，使用轻量玻璃
+    LiquidGlassListItem(
         backdrop = backdrop,
-        height = 52.dp,
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 28.dp),
+            .padding(horizontal = 20.dp, vertical = 1.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
-        )
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    subcategory.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
             Text(
-                subcategory.name,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
+                if (allLoaded && totalWords > 0) "$totalWords 词 · ${subcategory.dbFiles.size} 本"
+                else "${subcategory.dbFiles.size} 本",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
             )
         }
-        Text(
-            if (allLoaded && totalWords > 0) "$totalWords 词 · ${subcategory.dbFiles.size} 本"
-            else "${subcategory.dbFiles.size} 本",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(6.dp))
-        Icon(
-            Icons.Filled.ExpandMore,
-            contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
-        )
     }
 }
 
@@ -1178,50 +1344,55 @@ private fun LibraryCard(
     onClick: () -> Unit,
     backdrop: Backdrop,
 ) {
-    LiquidButton(
-        onClick = onClick,
+    // 词库列表项使用轻量玻璃
+    LiquidGlassListItem(
         backdrop = backdrop,
-        height = 72.dp,
+        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center,
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.MenuBook,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    if (wordCount != null) "$group 词库 · 共 $wordCount 词"
+                    else "$group 词库 · 加载中…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
             Icon(
-                Icons.AutoMirrored.Filled.MenuBook,
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(22.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
             )
         }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                if (wordCount != null) "$group 词库 · 共 $wordCount 词"
-                else "$group 词库 · 加载中…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
     }
 }
 
@@ -1233,7 +1404,9 @@ private fun LibraryCard(
 private fun CurrentBookPanel(
     backdrop: Backdrop,
     dbName: String,
+    dueCount: Int,
     onStartStudy: () -> Unit,
+    onStartReview: () -> Unit,
     onBrowseAll: () -> Unit,
 ) {
     LiquidCard(
@@ -1241,7 +1414,7 @@ private fun CurrentBookPanel(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
-        shape = RoundedCornerShape(28.dp),
+        shape = GlassShapes.Panel,
         blurRadius = 10.dp,
         lensHeight = 18.dp,
         lensAmount = 30.dp,
@@ -1279,6 +1452,22 @@ private fun CurrentBookPanel(
                 Text("开始学习", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
             Spacer(Modifier.height(10.dp))
+            if (dueCount > 0) {
+                LiquidButton(
+                    onClick = onStartReview,
+                    backdrop = backdrop,
+                    height = 46.dp,
+                    surfaceColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "今日待复习 $dueCount 词",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+            }
             LiquidButton(
                 onClick = onBrowseAll,
                 backdrop = backdrop,

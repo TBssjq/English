@@ -9,7 +9,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import androidx.core.net.toUri
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -74,7 +74,10 @@ import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
-import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.ssjq.english.ui.glass.GlassShapes
+import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.glass.glassTopBar
+import com.ssjq.english.ui.glass.glassTopBarColors
 import com.kyant.backdrop.effects.blur
 import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.effects.vibrancy
@@ -88,6 +91,7 @@ import com.ssjq.english.data.NoticeResult
 import com.ssjq.english.data.AppVersion
 import com.ssjq.english.data.UpdateResult
 import com.ssjq.english.data.UserManager
+import com.ssjq.english.ui.common.GlassDialogBody
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.ui.common.LiquidGlassListItem
@@ -124,27 +128,20 @@ fun AboutScreen(onBack: () -> Unit) {
         scope.launch {
             checkingUpdate = true
             updateError = null
-            try {
-                val (version, result) = AppUpdateManager.checkUpdate(context)
-                when (result) {
-                    UpdateResult.NEW_VERSION_AVAILABLE -> {
-                        latestVersion = version
-                        showUpdateDialog = true
-                    }
-                    UpdateResult.NO_UPDATE -> {
-                        updateError = "当前已是最新版本"
-                    }
-                    UpdateResult.NETWORK_ERROR -> {
-                        updateError = "检查更新失败，请检查网络"
-                    }
+            val (version, result) = AppUpdateManager.checkUpdate(context)
+            when (result) {
+                UpdateResult.NEW_VERSION_AVAILABLE -> {
+                    latestVersion = version
+                    showUpdateDialog = true
                 }
-            } catch (_: Exception) {
-                updateError = "检查更新失败，请稍后重试"
-            } finally {
-                // 必须放 finally：异常时若漏掉这一步，checkingUpdate 会永远为
-                // true，「检查更新」按钮从此永久禁用，只能重启 App
-                checkingUpdate = false
+                UpdateResult.NO_UPDATE -> {
+                    updateError = "当前已是最新版本"
+                }
+                UpdateResult.NETWORK_ERROR -> {
+                    updateError = "检查更新失败，请检查网络"
+                }
             }
+            checkingUpdate = false
         }
     }
 
@@ -153,32 +150,28 @@ fun AboutScreen(onBack: () -> Unit) {
         scope.launch {
             loadingNotice = true
             noticeError = null
-            try {
-                val (notice, result) = AppUpdateManager.fetchNotice()
-                when (result) {
-                    NoticeResult.HAS_NOTICE -> {
-                        // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
-                        if (notice != null && notice.hasContent()) {
-                            latestNotice = notice
-                            showNoticeDialog = true
-                        } else {
-                            noticeError = "暂无公告"
-                        }
+            val (notice, result) = AppUpdateManager.fetchNotice()
+            when (result) {
+                NoticeResult.HAS_NOTICE -> {
+                    // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
+                    if (notice != null && notice.hasContent()) {
+                        latestNotice = notice
+                        showNoticeDialog = true
+                    } else {
+                        noticeError = "暂无公告"
                     }
-                    NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
-                    NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
                 }
-            } catch (_: Exception) {
-                noticeError = "拉取公告失败，请稍后重试"
-            } finally {
-                // 同上：异常时也必须复位，否则按钮永久转圈
-                loadingNotice = false
+                NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
+                NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
             }
+            loadingNotice = false
         }
     }
 
     fun openNoticeUrl(url: String) {
-        AppUpdateManager.openUrl(context, url)
+        if (!AppUpdateManager.openUrl(context, url)) {
+            Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun openEditUsername() {
@@ -204,62 +197,24 @@ fun AboutScreen(onBack: () -> Unit) {
 
     fun handleUpdateClick() {
         val v = latestVersion ?: return
-        AppUpdateManager.openDownloadUrl(context, v)
+        if (!AppUpdateManager.openDownloadUrl(context, v)) {
+            Toast.makeText(context, "下载地址无效，请稍后重试", Toast.LENGTH_SHORT).show()
+            return
+        }
         showUpdateDialog = false
     }
 
-    // 液态玻璃背景采样源
-    val liquidBackdrop = rememberLayerBackdrop()
+    // 全应用共享的背景采样层
+    val liquidBackdrop = LocalAppBackdrop.current
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 背景层：渐变 + 彩色光斑
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .layerBackdrop(liquidBackdrop),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer,
-                                MaterialTheme.colorScheme.tertiaryContainer,
-                                MaterialTheme.colorScheme.surface,
-                            ),
-                        ),
-                    ),
-            )
-            Box(
-                Modifier
-                    .size(180.dp)
-                    .offset(x = (-30).dp, y = 80.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            )
-            Box(
-                Modifier
-                    .size(140.dp)
-                    .align(Alignment.TopEnd)
-                    .offset(x = 40.dp, y = 180.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.35f)),
-            )
-            Box(
-                Modifier
-                    .size(120.dp)
-                    .offset(x = 30.dp, y = 450.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)),
-            )
-        }
-
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         containerColor = Color.Transparent,
         topBar = {
             LargeTopAppBar(
+                modifier = Modifier.glassTopBar(liquidBackdrop),
+                colors = glassTopBarColors(),
                 title = { Text("关于我", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -284,7 +239,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp),
-                    shape = RoundedCornerShape(28.dp),
+                    shape = GlassShapes.Panel,
                     blurRadius = 10.dp,
                     lensHeight = 16.dp,
                     lensAmount = 28.dp,
@@ -360,7 +315,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     LiquidGlassCard(
                         backdrop = liquidBackdrop,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                         blurRadius = 5.dp,
                         lensHeight = 8.dp,
                         lensAmount = 14.dp,
@@ -505,23 +460,23 @@ fun AboutScreen(onBack: () -> Unit) {
                             val schemeIntents = listOf(
                                 // QQ 资料卡（最通用）
                                 Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("mqqapi://card/show_pslcard?src_type=internal&version=1&uin=$qqNumber&card_type=person&source=qrcode")
+                                    data = "mqqapi://card/show_pslcard?src_type=internal&version=1&uin=$qqNumber&card_type=person&source=qrcode".toUri()
                                 },
                                 // 备用：加好友界面
                                 Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("mqqwpa://im/add?uin=$qqNumber")
+                                    data = "mqqwpa://im/add?uin=$qqNumber".toUri()
                                 },
                                 // 备用：临时会话
                                 Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("mqqwpa://im/chat?chat_type=wpa&uin=$qqNumber&version=1&src_type=web&web_src=oicqzone.com")
+                                    data = "mqqwpa://im/chat?chat_type=wpa&uin=$qqNumber&version=1&src_type=web&web_src=oicqzone.com".toUri()
                                 },
                             )
                             for (intent in schemeIntents) {
-                                try {
+                                if (intent.resolveActivity(context.packageManager) != null) {
                                     context.startActivity(intent)
                                     opened = true
                                     break
-                                } catch (_: Exception) { }
+                                }
                             }
                             if (!opened) {
                                 // 都打不开就复制 QQ 号到剪贴板
@@ -546,10 +501,8 @@ fun AboutScreen(onBack: () -> Unit) {
                         subtitle = "TBssjq.github.io",
                         backdrop = liquidBackdrop,
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://TBssjq.github.io"))
-                            try {
-                                context.startActivity(intent)
-                            } catch (_: Exception) { }
+                            val intent = Intent(Intent.ACTION_VIEW, "https://TBssjq.github.io".toUri())
+                            context.startActivity(intent)
                         },
                     )
 
@@ -567,14 +520,12 @@ fun AboutScreen(onBack: () -> Unit) {
                         backdrop = liquidBackdrop,
                         onClick = {
                             val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                data = Uri.parse("mailto:653294795@qq.com")
+                                data = "mailto:653294795@qq.com".toUri()
                             }
-                            try {
-                                context.startActivity(
-                                    Intent.createChooser(intent, "发送邮件")
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            } catch (_: Exception) { }
+                            context.startActivity(
+                                Intent.createChooser(intent, "发送邮件")
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
                         },
                     )
                 }
@@ -598,10 +549,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.height(12.dp))
-            Text(
-                v.changelog.ifBlank { "新版本已发布，立即体验！" },
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
             Spacer(Modifier.height(20.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -641,7 +589,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("输入新用户名") },
                 textStyle = MaterialTheme.typography.titleMedium,
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                shape = GlassShapes.Tag,
                 colors = TextFieldDefaults.colors(
                     focusedIndicatorColor = MaterialTheme.colorScheme.primary,
                     unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
@@ -681,10 +629,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 fontWeight = FontWeight.Bold,
             )
             Spacer(Modifier.height(12.dp))
-            Text(
-                n.content,
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            GlassDialogBody(n.content)
             Spacer(Modifier.height(20.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),

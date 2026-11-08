@@ -1,6 +1,7 @@
 package com.ssjq.english.data
 
 import android.content.Context
+import androidx.core.content.edit
 import android.content.SharedPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,20 +13,30 @@ object UserManager {
     private const val KEY_USERNAME = "username"
     private const val KEY_FIRST_LAUNCH = "first_launch"
     private const val KEY_DARK_THEME = "dark_theme"
+    private const val KEY_GLASS_EFFECT = "glass_effect"
     private const val KEY_LAST_STUDY_DB = "last_study_db"
     private const val KEY_CURRENT_BOOK = "current_book"
-    private const val KEY_ANNOUNCEMENT_SEEN = "announcement_seen"
+    private const val KEY_ANNOUNCEMENT_SEEN = "announcement_seen_key"
 
     private const val KEY_QUIZ_RECORDS = "quiz_records"
+    private const val KEY_DAILY_GOAL = "daily_goal"
+
+    /** 每日学习目标可选项（单词数） */
+    val DAILY_GOAL_OPTIONS = listOf(10, 20, 30, 50, 100)
+
+    const val DEFAULT_DAILY_GOAL = 20
 
     @Volatile
     private var appContext: Context? = null
     private val _darkThemeFlow = MutableStateFlow<Boolean?>(null)
     val darkThemeFlow: StateFlow<Boolean?> = _darkThemeFlow.asStateFlow()
+    private val _glassEffectFlow = MutableStateFlow(true)
+    val glassEffectFlow: StateFlow<Boolean> = _glassEffectFlow.asStateFlow()
 
     fun init(context: Context) {
         if (appContext == null) appContext = context.applicationContext
         _darkThemeFlow.value = darkThemeMode()
+        _glassEffectFlow.value = glassEffectEnabled()
     }
 
     /**
@@ -42,14 +53,17 @@ object UserManager {
     }
 
     fun markLaunched() {
-        prefs.edit().putBoolean(KEY_FIRST_LAUNCH, false).apply()
+        prefs.edit { putBoolean(KEY_FIRST_LAUNCH, false) }
     }
 
-    /** 是否已展示过首启公告（用于首次进入强制拉取一次） */
-    fun hasSeenAnnouncement(): Boolean = prefs.getBoolean(KEY_ANNOUNCEMENT_SEEN, false)
+    /**
+     * 上一次已经展示过的公告标识（[com.ssjq.english.data.NoticeData.seenKey]）。
+     * 用标识而不是布尔值：作者换一条公告后，老用户仍然会看到新公告。
+     */
+    fun announcementSeenKey(): String? = prefs.getString(KEY_ANNOUNCEMENT_SEEN, null)
 
-    fun markAnnouncementSeen() {
-        prefs.edit().putBoolean(KEY_ANNOUNCEMENT_SEEN, true).apply()
+    fun setAnnouncementSeenKey(key: String) {
+        prefs.edit { putString(KEY_ANNOUNCEMENT_SEEN, key) }
     }
 
     fun getUsername(): String? {
@@ -57,7 +71,7 @@ object UserManager {
     }
 
     fun setUsername(username: String) {
-        prefs.edit().putString(KEY_USERNAME, username.trim()).apply()
+        prefs.edit { putString(KEY_USERNAME, username.trim()) }
     }
 
     fun hasUsername(): Boolean {
@@ -81,17 +95,39 @@ object UserManager {
 
     fun setDarkThemeMode(enabled: Boolean?) {
         if (enabled == null) {
-            prefs.edit().remove(KEY_DARK_THEME).apply()
+            prefs.edit { remove(KEY_DARK_THEME) }
         } else {
-            prefs.edit().putBoolean(KEY_DARK_THEME, enabled).apply()
+            prefs.edit { putBoolean(KEY_DARK_THEME, enabled) }
         }
         _darkThemeFlow.value = enabled
+    }
+
+    /**
+     * 玻璃特效开关。关闭后不再启用折射、饱和度增强与色散，只保留较弱模糊，
+     * 供低端设备或用户主动省电时使用。默认开启。
+     */
+    fun glassEffectEnabled(): Boolean = prefs.getBoolean(KEY_GLASS_EFFECT, true)
+
+    fun setGlassEffectEnabled(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_GLASS_EFFECT, enabled) }
+        _glassEffectFlow.value = enabled
+    }
+
+    /** 每日学习目标（单词数），默认 20 */
+    fun getDailyGoal(): Int {
+        val goal = prefs.getInt(KEY_DAILY_GOAL, DEFAULT_DAILY_GOAL)
+        return if (goal > 0) goal else DEFAULT_DAILY_GOAL
+    }
+
+    fun setDailyGoal(goal: Int) {
+        require(goal > 0) { "每日目标必须大于 0" }
+        prefs.edit { putInt(KEY_DAILY_GOAL, goal) }
     }
 
     fun getLastStudyDb(): String? = prefs.getString(KEY_LAST_STUDY_DB, null)
 
     fun setLastStudyDb(dbName: String) {
-        prefs.edit().putString(KEY_LAST_STUDY_DB, dbName).apply()
+        prefs.edit { putString(KEY_LAST_STUDY_DB, dbName) }
     }
 
     /**
@@ -101,11 +137,11 @@ object UserManager {
     fun getCurrentBook(): String? = prefs.getString(KEY_CURRENT_BOOK, null)
 
     fun setCurrentBook(dbName: String) {
-        prefs.edit().putString(KEY_CURRENT_BOOK, dbName).apply()
+        prefs.edit { putString(KEY_CURRENT_BOOK, dbName) }
     }
 
     fun clearCurrentBook() {
-        prefs.edit().remove(KEY_CURRENT_BOOK).apply()
+        prefs.edit { remove(KEY_CURRENT_BOOK) }
     }
 
     /**
@@ -114,45 +150,23 @@ object UserManager {
      */
     @Synchronized
     fun saveQuizRecord(record: String) {
-        try {
-            // 已存数据损坏时重置为空数组；旧实现无 try/catch，
-            // 一旦 quiz_records 变成非法 JSON，之后每次答题结束都会抛
-            // JSONException 崩溃，刷题记录功能永久不可用且无法自愈。
-            val records = try {
-                org.json.JSONArray(prefs.getString(KEY_QUIZ_RECORDS, null) ?: "[]")
-            } catch (_: Exception) {
-                org.json.JSONArray()
-            }
-            // 记录本身非法则跳过写入，不影响答题主流程
-            val obj = try {
-                org.json.JSONObject(record)
-            } catch (_: Exception) {
-                return
-            }
-            records.put(obj)
+        val records = org.json.JSONArray(prefs.getString(KEY_QUIZ_RECORDS, null) ?: "[]")
+        val obj = org.json.JSONObject(record)
+        records.put(obj)
 
-            // 只保留最近 100 条记录
-            val trimmed = org.json.JSONArray()
-            val from = (records.length() - 100).coerceAtLeast(0)
-            for (i in from until records.length()) {
-                trimmed.put(records.get(i))
-            }
-            prefs.edit().putString(KEY_QUIZ_RECORDS, trimmed.toString()).apply()
-        } catch (_: Exception) {
-            // 持久化失败不应打断答题流程
+        // 只保留最近 100 条记录
+        val trimmed = org.json.JSONArray()
+        val from = (records.length() - 100).coerceAtLeast(0)
+        for (i in from until records.length()) {
+            trimmed.put(records.get(i))
         }
+        prefs.edit { putString(KEY_QUIZ_RECORDS, trimmed.toString()) }
     }
 
-    /** 读取全部刷题记录（JSON 数组字符串），无记录或损坏时返回 "[]" */
+    /** 读取全部刷题记录（JSON 数组字符串），无记录时返回 "[]" */
     fun getQuizRecords(): String {
         val raw = prefs.getString(KEY_QUIZ_RECORDS, null) ?: return "[]"
-        // raw 本身就是合法 JSON 数组字符串，直接返回即可，
-        // 旧实现 JSONArray(raw).toString() 会白白解析再序列化一遍
-        return try {
-            org.json.JSONArray(raw)
-            raw
-        } catch (_: Exception) {
-            "[]"
-        }
+        org.json.JSONArray(raw)
+        return raw
     }
 }

@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import com.ssjq.english.ui.glass.GlassShapes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
@@ -56,13 +56,14 @@ import kotlinx.coroutines.launch
 fun ImportExportDialog(
     visible: Boolean,
     onDismiss: () -> Unit,
-    onResult: (String) -> Unit,
+    /** 选好导出 URI 后交给调用方执行，协程生命周期由调用方持有 */
+    onExportRequested: (Uri, ExportScope, String, String, ExportContentType) -> Unit,
+    /** 确认导入策略后交给调用方执行，避免 Dialog 退出组合导致协程被取消 */
+    onImportConfirmed: (Uri, ImportConflictStrategy) -> Unit,
 ) {
-    val context = LocalContext.current
     var showStrategyDialog by remember { mutableStateOf(false) }
     var selectedStrategy by remember { mutableStateOf(ImportConflictStrategy.MERGE_DUPLICATE) }
     var pendingUri by remember { mutableStateOf<Uri?>(null) }
-    val coroutineScope = rememberCoroutineScope()
 
     var showExportScopeDialog by remember { mutableStateOf(false) }
     var selectedExportScope by remember { mutableStateOf(ExportScope.ALL) }
@@ -74,10 +75,14 @@ fun ImportExportDialog(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         uri?.let { selectedUri ->
-            coroutineScope.launch(Dispatchers.IO) {
-                performExport(context, selectedUri, selectedExportScope, selectedGroupName, selectedDbName, selectedContentType, onResult)
-                onDismiss()
-            }
+            onExportRequested(
+                selectedUri,
+                selectedExportScope,
+                selectedGroupName,
+                selectedDbName,
+                selectedContentType,
+            )
+            onDismiss()
         } ?: onDismiss()
     }
 
@@ -116,7 +121,7 @@ fun ImportExportDialog(
                     Button(
                         onClick = { showExportScopeDialog = true },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                     ) {
                         Text("导出数据", fontWeight = FontWeight.Medium)
                     }
@@ -126,7 +131,7 @@ fun ImportExportDialog(
                             importLauncher.launch(arrayOf(LibraryFileManager.MIME_TYPE_JSON))
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = GlassShapes.Item,
                     ) {
                         Text("导入数据", fontWeight = FontWeight.Medium)
                     }
@@ -377,9 +382,7 @@ fun ImportExportDialog(
                     onClick = {
                         val uri = pendingUri
                         if (uri != null) {
-                            coroutineScope.launch(Dispatchers.IO) {
-                                performImport(context, uri, selectedStrategy, onResult)
-                            }
+                            onImportConfirmed(uri, selectedStrategy)
                         }
                         showStrategyDialog = false
                         pendingUri = null
@@ -430,81 +433,30 @@ private val ImportConflictStrategy.description: String
         ImportConflictStrategy.SKIP_EXISTING -> "仅导入新数据，跳过重复项"
     }
 
-private suspend fun performExport(
+internal suspend fun performExport(
     context: Context,
     uri: Uri,
     scope: ExportScope,
     groupName: String,
     dbName: String,
     contentType: ExportContentType,
-    onResult: (String) -> Unit,
-) {
-    android.util.Log.d("Export", "====== 开始导出 ======")
-    android.util.Log.d("Export", "URI: $uri")
-    android.util.Log.d("Export", "范围: $scope, groupName: $groupName, dbName: $dbName")
-    android.util.Log.d("Export", "内容类型: $contentType")
-
-    try {
-        android.util.Log.d("Export", "步骤1: 获取数据...")
-        val data = when (scope) {
-            ExportScope.ALL -> LibraryRepository.exportAll(contentType)
-            ExportScope.GROUP -> LibraryRepository.exportByGroup(groupName, contentType)
-            ExportScope.SINGLE -> LibraryRepository.exportByDbName(dbName, contentType)
-        }
-        android.util.Log.d("Export", "步骤1完成: 错题=${data.wrongWords.size}, 收藏=${data.favorites.size}")
-
-        // 不再在此处预先序列化：writeFile 内部会序列化一次，
-        // 旧实现把同一份大 JSON 序列化两遍，纯属浪费
-        android.util.Log.d("Export", "步骤3: 写入文件...")
-        val success = LibraryFileManager.writeFile(context, uri, data)
-        android.util.Log.d("Export", "步骤3完成: success=$success")
-
-        onResult(if (success) "导出成功" else "导出失败")
-    } catch (e: Exception) {
-        android.util.Log.e("Export", "导出失败!", e)
-        onResult("导出失败: ${e.message}")
+): String {
+    val data = when (scope) {
+        ExportScope.ALL -> LibraryRepository.exportAll(contentType)
+        ExportScope.GROUP -> LibraryRepository.exportByGroup(groupName, contentType)
+        ExportScope.SINGLE -> LibraryRepository.exportByDbName(dbName, contentType)
     }
+    LibraryFileManager.writeFile(context, uri, data)
+    return "导出成功"
 }
 
-private suspend fun performImport(context: Context, uri: Uri, strategy: ImportConflictStrategy, onResult: (String) -> Unit) {
-    android.util.Log.d("Export", "====== 开始导入 ======")
-    android.util.Log.d("Export", "URI: $uri")
-    android.util.Log.d("Export", "策略: ${strategy.name}")
-
-    try {
-        android.util.Log.d("Export", "步骤1: 读取文件...")
-        val jsonString = LibraryFileManager.readFile(context, uri)
-        if (jsonString == null) {
-            android.util.Log.e("Export", "步骤1失败: 读取文件返回null")
-            onResult("读取文件失败")
-            return
-        }
-        android.util.Log.d("Export", "步骤1完成: 文件长度=${jsonString.length}")
-
-        android.util.Log.d("Export", "步骤2: 验证JSON格式...")
-        if (!LibraryFileManager.validateJson(jsonString)) {
-            android.util.Log.e("Export", "步骤2失败: JSON格式无效")
-            onResult("文件格式无效")
-            return
-        }
-        android.util.Log.d("Export", "步骤2完成: JSON格式验证通过")
-
-        android.util.Log.d("Export", "步骤3: 反序列化数据...")
-        val data = LibraryFileManager.deserializeFromJson(jsonString)
-        if (data == null) {
-            android.util.Log.e("Export", "步骤3失败: 反序列化返回null")
-            onResult("解析数据失败")
-            return
-        }
-        android.util.Log.d("Export", "步骤3完成: 错题=${data.wrongWords.size}, 收藏=${data.favorites.size}")
-
-        android.util.Log.d("Export", "步骤4: 导入数据...")
-        val result = LibraryRepository.importData(data, strategy)
-        android.util.Log.d("Export", "步骤4完成: ${result.message}")
-
-        onResult(result.message)
-    } catch (e: Exception) {
-        android.util.Log.e("Export", "导入失败!", e)
-        onResult("导入失败: ${e.message}")
-    }
+internal suspend fun performImport(
+    context: Context,
+    uri: Uri,
+    strategy: ImportConflictStrategy,
+): String {
+    val jsonString = LibraryFileManager.readFile(context, uri)
+    LibraryFileManager.validateJson(jsonString)
+    val data = LibraryFileManager.deserializeFromJson(jsonString)
+    return LibraryRepository.importData(data, strategy).message
 }

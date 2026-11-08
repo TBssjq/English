@@ -10,6 +10,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -53,18 +55,22 @@ import com.ssjq.english.ui.common.LiquidGlassCard
  * @param correctAnswer 正确答案
  * @param exampleSentence 例句（可选）
  * @param onNext 下一题按钮点击
+ * @param onOpenWord 打开当前单词的卡片（仅在答错时出现）
  */
 @Composable
 fun AnswerFeedbackCard(
     result: AnswerResult,
     correctAnswer: String,
+    modifier: Modifier = Modifier,
     exampleSentence: String? = null,
     onNext: () -> Unit,
+    onOpenWord: (() -> Unit)? = null,
     backdrop: Backdrop,
-    modifier: Modifier = Modifier,
 ) {
     AnimatedContent(
-        targetState = result !is AnswerResult.Idle,
+        // 使用完整结果作为 targetState：退出动画期间旧槽位保留旧结果，
+        // 避免刚答完的反馈内容被下一次结果覆盖
+        targetState = result,
         transitionSpec = {
             slideInVertically(initialOffsetY = { it }, animationSpec = tween(250)) +
                 fadeIn(tween(250)) togetherWith
@@ -73,22 +79,19 @@ fun AnswerFeedbackCard(
         },
         label = "feedback",
         modifier = modifier.fillMaxWidth(),
-    ) { visible ->
-        if (!visible) {
-            Box(Modifier.height(0.dp))
-        } else {
-            when (result) {
-                is AnswerResult.Correct -> CorrectFeedback(onNext, backdrop)
-                is AnswerResult.AlmostCorrect -> AlmostCorrectFeedback(result.tip, onNext, backdrop)
-                is AnswerResult.Wrong -> WrongFeedback(
-                    userAnswer = result.userAnswer,
-                    correctAnswer = correctAnswer,
-                    exampleSentence = exampleSentence,
-                    onNext = onNext,
-                    backdrop = backdrop,
-                )
-                is AnswerResult.Idle -> Box(Modifier.height(0.dp))
-            }
+    ) { targetResult ->
+        when (targetResult) {
+            is AnswerResult.Correct -> CorrectFeedback(onNext, backdrop)
+            is AnswerResult.AlmostCorrect -> AlmostCorrectFeedback(targetResult.tip, onNext, backdrop)
+            is AnswerResult.Wrong -> WrongFeedback(
+                userAnswer = targetResult.userAnswer,
+                correctAnswer = correctAnswer,
+                exampleSentence = exampleSentence,
+                onNext = onNext,
+                onOpenWord = onOpenWord,
+                backdrop = backdrop,
+            )
+            is AnswerResult.Idle -> Box(Modifier.height(0.dp))
         }
     }
 }
@@ -195,6 +198,7 @@ private fun WrongFeedback(
     correctAnswer: String,
     exampleSentence: String?,
     onNext: () -> Unit,
+    onOpenWord: (() -> Unit)?,
     backdrop: Backdrop,
 ) {
     LiquidGlassCard(
@@ -263,16 +267,34 @@ private fun WrongFeedback(
                 )
             }
             Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = onNext,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError,
-                ),
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("下一题", fontWeight = FontWeight.SemiBold)
+                if (onOpenWord != null) {
+                    OutlinedButton(
+                        onClick = onOpenWord,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Text("查看单词", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Button(
+                    onClick = onNext,
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) {
+                    Text("下一题", fontWeight = FontWeight.SemiBold)
+                }
             }
         }
     }

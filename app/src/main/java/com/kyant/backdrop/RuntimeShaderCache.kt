@@ -20,7 +20,9 @@ internal class RuntimeShaderCacheImpl : RuntimeShaderCache {
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
-        return runtimeShaders.getOrPut(key) { RuntimeShader(string) }
+        // key 相同的不同 AGSL 源码必须各自编译，否则会取到错误的着色器
+        val cacheKey = "$key:${string.hashCode()}"
+        return runtimeShaders.getOrPut(cacheKey) { RuntimeShader(string) }
     }
 
     fun clear() {

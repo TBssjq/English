@@ -2,7 +2,7 @@
 
 一款基于 **Jetpack Compose** 与 **液态玻璃（Liquid Glass）** 视觉风格的 Android 英语单词学习应用。内置 81 个离线词库，提供词卡学习、多种测验模式、疯狂刷题、打卡成就、错题本/收藏夹与数据导入导出。
 
-> 应用名：English ｜ 包名：`com.ssjq.english` ｜ 当前版本：2.1
+> 应用名：English ｜ 包名：`com.ssjq.english` ｜ 当前版本：2.2
 
 ---
 
@@ -14,9 +14,11 @@
 - 翻面后上滑查看短语例句（「短语例句记忆法」，例句中的英文单词可点击查词）
 - 翻面后下滑进入拼写面板
 - 一键加入错题本 / 收藏夹
+- **间隔重复复习**：评分后自动安排下次到期日，首页「今日待复习 N 词」一键进入到期单词
 
 ### 测验
-- **快速测验**：选择题、听音选词、听音拼写等多种题型
+- **快速测验**：选择题、听音选词、听音拼写等多种题型，可开启自动发音
+- 答错就地写入错题本，反馈卡可直达该单词的卡片；拼写题按字母标出写错的位置
 - **疯狂刷题**：可选错题本 / 收藏夹 / 指定词库出题，含评分与等级
 - 测验结束后自动打卡并保存刷题记录
 
@@ -30,6 +32,7 @@
 - 错题本 / 收藏夹管理
 - 全部数据导出 / 导入（JSON），支持按范围导出与冲突策略（覆盖 / 合并去重）
 - 深色模式（浅色 / 深色 / 跟随系统）
+- 玻璃特效开关（关闭折射、色散与饱和度增强，低端设备自动降级）
 - 应用内「检查更新」与「更新公告」
 
 ---
@@ -40,7 +43,7 @@
 |---|---|
 | 语言 | Kotlin 2.2.10 |
 | UI | Jetpack Compose（BOM 2025.12.01）+ Material 3 |
-| 构建 | AGP 9.3.2 / Gradle 9.7.1 |
+| 构建 | AGP 9.4.1 / Gradle 9.7.1 |
 | JDK | Java 21 |
 | SDK | compileSdk 36 · targetSdk 36 · minSdk 29 |
 | 玻璃效果 | `com.kyant.backdrop` 1.0.0 **源码集成**（`app/src/main/java/com/kyant/backdrop/`） |
@@ -51,27 +54,30 @@
 ## 项目结构
 
 ```
-app/src/main/
-├─ assets/                    81 个离线词库（*.db）
-├─ java/com/ssjq/english/
-│  ├─ MainActivity.kt
-│  ├─ data/                   数据层：数据库、用户数据、打卡、导入导出、更新检查
-│  ├─ quiz/                   测验引擎与界面（出题 / 答题 / 反馈 / 成绩）
-│  └─ ui/
-│     ├─ AppNav.kt            导航（顶层页签 + 二级页面栈）
-│     ├─ home/                首页
-│     ├─ wordlist/            词库列表
-│     ├─ worddetail/          单词详情 / 背诵
-│     ├─ crazyquiz/           疯狂刷题
-│     ├─ checkin/             打卡与成就
-│     ├─ library/             错题本 / 收藏夹
-│     ├─ search/              搜索
-│     ├─ register/            注册（用户名 + 选词库）
-│     ├─ about/               关于与检查更新
-│     ├─ glass/               玻璃交互组件（按钮 / 卡片 / 开关 / 底栏）
-│     ├─ common/              公共组件（LiquidGlass、导入导出对话框等）
-│     └─ theme/               主题、配色、字体
-└─ res/                       图标与资源
+app/src/
+├─ main/
+│  ├─ assets/                 81 个离线词库（*.db）
+│  ├─ java/com/ssjq/english/
+│  │  ├─ MainActivity.kt
+│  │  ├─ data/                数据层：数据库、用户数据、打卡、复习调度、导入导出、更新检查
+│  │  ├─ quiz/                测验引擎与界面（出题 / 答题 / 反馈 / 成绩）
+│  │  ├─ service/             发音播放器
+│  │  └─ ui/
+│  │     ├─ AppNav.kt         导航（顶层页签 + 二级页面栈）
+│  │     ├─ home/             首页
+│  │     ├─ wordlist/         词库列表
+│  │     ├─ worddetail/       单词详情 / 背诵
+│  │     ├─ crazyquiz/        疯狂刷题
+│  │     ├─ checkin/          打卡与成就
+│  │     ├─ library/          错题本 / 收藏夹
+│  │     ├─ search/           搜索
+│  │     ├─ register/         注册（用户名 + 选词库）
+│  │     ├─ about/            关于与检查更新
+│  │     ├─ glass/            玻璃组件与规格（卡片 / 按钮 / 开关 / 底栏 / 顶栏 / 配色与性能档位）
+│  │     ├─ common/           公共组件（LiquidGlass、导入导出对话框等）
+│  │     └─ theme/            主题、配色、字体
+│  └─ res/                    图标与资源
+└─ test/java/com/ssjq/english/ 单元测试（复习调度 / 测验引擎）
 ```
 
 ---
@@ -84,6 +90,9 @@ app/src/main/
 
 # Debug 包
 .\gradlew.bat :app:assembleDebug
+
+# 单元测试
+.\gradlew.bat :app:testDebugUnitTest
 
 # 完整验证（含 R8 混淆）
 .\gradlew.bat :app:assembleDebug :app:assembleRelease
@@ -120,8 +129,9 @@ keyPassword=你的别名密码
 
 | 文件 | 说明 |
 |---|---|
+| [`DEVELOPMENT.md`](./DEVELOPMENT.md) | 开发文档（分层 / 存储 / 核心流程 / 约定 / 测试 / 发布 / 排障） |
 | [`design.md`](./design.md) | 需求描述 |
-| [`TODO.md`](./TODO.md) | 开发交接文档（技术约束 / 已完成 / 待办） |
+| [`TODO.md`](./TODO.md) | 技术约束与历史交接记录 |
 | [`log.json`](./log.json) | 更新日志 |
 | `english.json` | 应用内「检查更新」数据（版本 / 下载地址 / 更新说明） |
 | `english.log.json` | 应用内「更新公告」数据 |

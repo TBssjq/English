@@ -21,6 +21,15 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun ShimmerBox(modifier: Modifier = Modifier) {
+    ShimmerBox(modifier, rememberShimmerAlpha())
+}
+
+/**
+ * 多个占位块共享同一个呼吸动画。
+ * 每个 InfiniteTransition 都会持续驱动重组，骨架屏里几十个实例各自创建开销明显。
+ */
+@Composable
+fun rememberShimmerAlpha(): Float {
     val transition = rememberInfiniteTransition(label = "shimmer")
     val alpha by transition.animateFloat(
         initialValue = 0.35f,
@@ -28,6 +37,11 @@ fun ShimmerBox(modifier: Modifier = Modifier) {
         animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
         label = "alpha",
     )
+    return alpha
+}
+
+@Composable
+fun ShimmerBox(modifier: Modifier = Modifier, alpha: Float) {
     Box(
         modifier
             .clip(RoundedCornerShape(6.dp))

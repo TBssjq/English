@@ -19,6 +19,35 @@ data class LibrarySubcategory(
 object LibraryCatalog {
 
     /**
+     * 逐层扩大的查找顺序：当前词库 → 同子分类 → 同分类 → 其他词库。
+     * 用于查词时先就近命中，避免每次都扫全部词库。
+     *
+     * @param current 当前词库名，可带 .db 后缀
+     * @param available assets 中实际存在的词库名，不含 .db 后缀
+     */
+    fun searchOrder(current: String, available: List<String>): List<String> {
+        val name = current.removeSuffix(".db")
+        val availableSet = available.toSet()
+        var sameSub = emptyList<String>()
+        var sameCat = emptyList<String>()
+        for (category in categories) {
+            for (sub in category.subcategories) {
+                if (name in sub.dbFiles) {
+                    sameSub = sub.dbFiles
+                    sameCat = category.subcategories.flatMap { it.dbFiles }
+                }
+            }
+        }
+        // 只返回 assets 中实际存在的词库：分类目录里声明但未打包的条目会导致打开失败
+        return buildList {
+            if (name in availableSet) add(name)
+            addAll(sameSub.filter { it != name && it in availableSet })
+            addAll(sameCat.filter { it != name && it !in sameSub && it in availableSet })
+            addAll(available.filter { it != name && it !in sameCat })
+        }.distinct()
+    }
+
+    /**
      * 完整的词库分类目录。
      * db 文件名必须与 assets/databases/ 下的实际文件名一致（不含 .db 后缀也可以，显示用）。
      */

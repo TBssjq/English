@@ -1,16 +1,14 @@
 package com.ssjq.english.quiz
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.MediaPlayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordDetail
+import com.ssjq.english.service.PronunciationPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
 
 /**
  * 测验状态容器（MVI 风格）：
@@ -52,12 +50,8 @@ class QuizState(
     /** 当前是否处于「错题回顾」轮：回顾轮不参与打卡统计 */
     private var isReviewRound: Boolean = false
 
-    /**
-     * 复用单个 MediaPlayer。
-     * 旧实现每次发音都 `new MediaPlayer()` 且不保存引用，只有播放完成/出错才回收；
-     * 连点发音或答题中途退出会不断堆积实例，最终突破进程上限抛异常并静默失效。
-     */
-    private var mediaPlayer: MediaPlayer? = null
+    /** 发音播放器 */
+    private val pronunciationPlayer = PronunciationPlayer()
 
     /** 加载题目（异步） */
     suspend fun load() {
@@ -65,20 +59,14 @@ class QuizState(
         val words = if (sourceWords.isNotEmpty()) {
             sourceWords
         } else {
-            // 词库缺失 / 损坏 / 表结构异常都要吞掉，交给下面的空态处理，
-            // 否则异常会从 LaunchedEffect 一路抛出去直接崩溃
-            try {
-                withContext(Dispatchers.IO) {
-                    val db = DatabaseManager.openDatabase(context, dbName)
-                    try {
-                        val list = DatabaseManager.getWordList(db)
-                        list.take(80).mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
-                    } finally {
-                        DatabaseManager.release(db)
-                    }
+            withContext(Dispatchers.IO) {
+                val db = DatabaseManager.openDatabase(context, dbName)
+                try {
+                    val list = DatabaseManager.getWordList(db)
+                    list.take(80).mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
+                } finally {
+                    DatabaseManager.release(db)
                 }
-            } catch (_: Exception) {
-                emptyList()
             }
         }
         loadedWords = words
@@ -259,65 +247,18 @@ class QuizState(
         uiState = uiState.copy(modeStats = modeStats.toMap())
     }
 
-    /**
-     * 有道词典发音 API：
-     * https://dict.youdao.com/dictvoice?audio={word}&type={type}
-     * type=1 英音，type=2 美音。
-     *
-     * 复用同一个 MediaPlayer：新的发音会先停掉上一个，
-     * 避免连点发音时多个音频叠加，也避免实例堆积突破进程上限。
-     */
-    fun speak(word: String, type: Int = 2) {
-        val encoded = try {
-            URLEncoder.encode(word, "UTF-8")
-        } catch (_: Exception) {
-            return
-        }
-        val url = "https://dict.youdao.com/dictvoice?audio=$encoded&type=$type"
-        releasePlayer()
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build()
-                )
-                setDataSource(url)
-                setOnPreparedListener { runCatching { start() } }
-                setOnCompletionListener { releasePlayer() }
-                setOnErrorListener { _, _, _ -> releasePlayer(); true }
-                prepareAsync()
-            }
-        } catch (_: Exception) {
-            // 播放失败不影响答题
-            releasePlayer()
-        }
-    }
+    fun speak(word: String, type: Int = 2) = pronunciationPlayer.speak(word, type)
 
-    private fun releasePlayer() {
-        mediaPlayer?.let { player ->
-            try {
-                if (player.isPlaying) player.stop()
-                player.reset()
-                player.release()
-            } catch (_: Exception) {
-                // 释放失败没有补救手段，忽略即可
-            }
-        }
-        mediaPlayer = null
-    }
-
-    /** 释放播放器。必须在页面销毁时调用，否则 MediaPlayer 会随 Activity 泄漏 */
-    fun release() {
-        releasePlayer()
-    }
+    /** 释放播放器。必须在页面销毁时调用 */
+    fun release() = pronunciationPlayer.release()
 
     /** 一轮测验的结果快照，供完成时上报打卡与刷题记录 */
     data class FinishReport(
         val correctCount: Int,
         val totalQuestions: Int,
         val wrongCount: Int,
+        /** 本轮答错的单词，用于写入错题本与结果页快捷入口 */
+        val wrongWords: List<WordDetail>,
     )
 
     /** 去重后的错题数（小题库会循环出词，同一词可能被错多次） */
@@ -344,6 +285,7 @@ class QuizState(
             correctCount = uiState.correctCount,
             totalQuestions = total,
             wrongCount = uiState.wrongWords.distinct().size,
+            wrongWords = uiState.wrongWords.distinct(),
         )
     }
 }

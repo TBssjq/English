@@ -3,9 +3,11 @@ package com.ssjq.english.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonSyntaxException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -45,6 +47,12 @@ data class NoticeData(
 ) {
     /** 是否值得展示：没有任何文案时不弹空对话框 */
     fun hasContent(): Boolean = title.isNotBlank() || content.isNotBlank()
+
+    /**
+     * 公告标识。标题或正文任一处变化即视为新公告，
+     * 用它代替「已读过」的布尔值，作者发布新公告时老用户仍能收到。
+     */
+    fun seenKey(): String = "$title#${content.length}#${content.hashCode()}"
 }
 
 /** 公告拉取结果 */
@@ -135,7 +143,7 @@ object AppUpdateManager {
      * 解析公告，兼容「单条公告」与「更新日志」两种服务端结构。
      * 无法识别时返回 null（调用方按 NO_NOTICE 处理，绝不弹出空内容对话框）。
      */
-    private fun parseNotice(body: String): NoticeData? {
+    internal fun parseNotice(body: String): NoticeData? {
         val root = parseObject(body) ?: return null
 
         // 格式一：单条公告
@@ -185,7 +193,7 @@ object AppUpdateManager {
         return null
     }
 
-    private fun parseVersion(body: String): AppVersion? {
+    internal fun parseVersion(body: String): AppVersion? {
         val root = parseObject(body) ?: return null
         val latestVersion = root.string("latestVersion")
         if (latestVersion.isBlank()) return null
@@ -197,17 +205,24 @@ object AppUpdateManager {
         )
     }
 
-    private fun parseObject(body: String): JsonObject? {
-        return try {
-            val element = JsonParser.parseString(body)
-            element.takeIf { it.isJsonObject }?.asJsonObject
-        } catch (_: Exception) {
+    /**
+     * 解析服务端返回的 JSON 对象。
+     *
+     * 版本与公告都托管在静态站点上，域名失效、被劫持或误传 HTML 时会返回
+     * 状态码 200 的非 JSON 内容。直接交给 [JsonParser] 会抛 JsonSyntaxException，
+     * 异常沿首启公告的协程冒到顶层，表现为一启动就闪退。这里把「不是 JSON」
+     * 归为解析失败（返回 null），由调用方转成 NETWORK_ERROR 提示用户。
+     */
+    private fun parseObject(body: String): JsonObject? =
+        try {
+            JsonParser.parseString(body).takeIf { it.isJsonObject }?.asJsonObject
+        } catch (_: JsonSyntaxException) {
             null
         }
-    }
 
+    // 服务端存在「单条公告」与「更新日志」两种结构，字段允许缺失
     private fun JsonObject.string(key: String): String =
-        get(key).textOrNull().orEmpty()
+        get(key)?.textOrNull().orEmpty()
 
     private fun JsonObject.bool(key: String): Boolean =
         get(key)?.takeIf { it.isJsonPrimitive && !it.isJsonNull }?.asBoolean ?: false
@@ -223,18 +238,14 @@ object AppUpdateManager {
 
     /** 获取当前 App 的 versionName */
     fun getCurrentVersionName(context: Context): String {
-        return try {
-            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            pInfo.versionName ?: "0.0"
-        } catch (_: Exception) {
-            "0.0"
-        }
+        val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        return checkNotNull(pInfo.versionName) { "应用版本名为空" }
     }
 
     /**
      * 版本号对比：a 比 b 新返回 true。
-     * 支持 "1.0"、"1.2.3"、"1.0.0-alpha" 等常见格式。
-     * 按段按数字比较；段数不足补 0。
+     * 按点分段、逐段取其中的数字比较，段数不足补 0，因此 "2.10" 比 "2.9" 新。
+     * 分段里的非数字后缀（如 "1.0.0-alpha" 里的 alpha）不参与比较。
      */
     fun isVersionNewer(a: String, b: String): Boolean {
         val aParts = a.split(".").map { it.filter { c -> c.isDigit() }.toIntOrNull() ?: 0 }
@@ -249,25 +260,26 @@ object AppUpdateManager {
         return false
     }
 
-    /** 用系统浏览器打开下载链接 */
-    fun openDownloadUrl(context: Context, version: AppVersion) {
+    /** 用系统浏览器打开下载链接；返回是否真的发起了跳转 */
+    fun openDownloadUrl(context: Context, version: AppVersion): Boolean =
         openUrl(context, version.downloadUrl)
-    }
 
     /**
      * 用系统浏览器打开链接。
-     * 只放行 http/https，避免服务端给出空串或非法 scheme 时
-     * 走到 startActivity 触发 ActivityNotFoundException。
+     *
+     * 只放行 http/https，并在没有应用能处理 VIEW 时返回 false：
+     * 服务端给出空串、非法 scheme、或设备上没有浏览器时，
+     * 盲目 startActivity 会抛 ActivityNotFoundException 崩溃；
+     * 只检查 scheme 而不检查接收方，则表现为点了按钮毫无反应。
      */
-    fun openUrl(context: Context, url: String) {
-        val uri = Uri.parse(url)
+    fun openUrl(context: Context, url: String): Boolean {
+        val uri = url.toUri()
         val scheme = uri.scheme
-        if (scheme != "http" && scheme != "https") return
-        try {
-            context.startActivity(
-                Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        } catch (_: Exception) {
-        }
+        if (scheme != "http" && scheme != "https") return false
+        val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // 清单里的 <queries> 声明了 VIEW + http(s)，否则 Android 11 起这里恒为 null
+        if (intent.resolveActivity(context.packageManager) == null) return false
+        context.startActivity(intent)
+        return true
     }
 }

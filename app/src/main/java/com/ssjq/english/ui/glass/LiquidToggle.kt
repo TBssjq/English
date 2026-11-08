@@ -1,6 +1,5 @@
 package com.ssjq.english.ui.glass
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -55,13 +54,11 @@ fun LiquidToggle(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
-        if (isLightTheme) Color(0xFF34C759)
-        else Color(0xFF30D158)
+    val palette = LocalGlassPalette.current
+    val accentColor = palette.accent
     val trackColor =
-        if (isLightTheme) Color(0xFF787878).copy(0.2f)
-        else Color(0xFF787880).copy(0.36f)
+        if (palette.isDark) Color(0xFF787880).copy(0.36f)
+        else Color(0xFF787878).copy(0.2f)
 
     val density = LocalDensity.current
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
@@ -158,15 +155,14 @@ fun LiquidToggle(
                             }
                         }
                     ),
-                    shape = { Capsule },
+                    shape = GlassShapes.PillBlock,
+                    // 效果链保持静态：lambda 内读取动画值会让 observeReads 每帧触发重建
+                    // 整条 RenderEffect 链。按压反馈由 layerBlock 缩放与表面色渐变表达。
                     effects = {
-                        val progress = dampedDragAnimation.pressProgress
-                        blur(8f.dp.toPx() * (1f - progress))
-                        lens(
-                            5f.dp.toPx() * progress,
-                            10f.dp.toPx() * progress,
-                            chromaticAberration = true
-                        )
+                        blur(GlassQuality.blurRadius.toPx())
+                        if (GlassQuality.lensEnabled) {
+                            lens(5f.dp.toPx(), 10f.dp.toPx(), chromaticAberration = true)
+                        }
                     },
                     highlight = {
                         val progress = dampedDragAnimation.pressProgress

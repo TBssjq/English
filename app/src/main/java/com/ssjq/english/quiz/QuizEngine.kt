@@ -238,22 +238,57 @@ object QuizEngine {
         val normalizedCorrect = normalizeForCompare(correct)
         if (normalizedUser == normalizedCorrect) return AnswerResult.Correct
         val dist = editDistance(normalizedUser, normalizedCorrect)
+        val diffInfo = computeCharDiff(userInput, correct)
         return if (dist <= 1) {
-            AnswerResult.AlmostCorrect("差一点就对了！正确拼写：$correct")
+            AnswerResult.AlmostCorrect("差一点就对了！正确拼写：$correct", diffInfo)
         } else {
-            val diffInfo = computeCharDiff(userInput, correct)
             AnswerResult.Wrong(userAnswer = userInput, correct = correct, diffInfo = diffInfo)
         }
     }
 
-    /** 计算字母级差异：逐字符比较，标记错误字母 */
+    /**
+     * 计算字母级差异：按最长公共子序列对齐。
+     *
+     * 逐位比较在多写或少写一个字母时会把插入点之后的字母全部判错
+     * （`dissipatte` 对 `dissipate` 会标出一长串红字），
+     * 按公共子序列对齐后只标出真正多写、写错的那个字母。
+     */
     private fun computeCharDiff(user: String, correct: String): List<CharDiff> {
-        val result = mutableListOf<CharDiff>()
-        val maxLen = maxOf(user.length, correct.length)
-        for (i in 0 until maxLen) {
-            val userChar = user.getOrNull(i) ?: ' '
-            val correctChar = correct.getOrNull(i) ?: ' '
-            result.add(CharDiff(userChar, userChar.equals(correctChar, ignoreCase = true)))
+        val n = user.length
+        val m = correct.length
+        // dp[i][j] = user[i..] 与 correct[j..] 的最长公共子序列长度
+        val dp = Array(n + 1) { IntArray(m + 1) }
+        for (i in n - 1 downTo 0) {
+            for (j in m - 1 downTo 0) {
+                dp[i][j] = if (user[i].equals(correct[j], ignoreCase = true)) {
+                    dp[i + 1][j + 1] + 1
+                } else {
+                    maxOf(dp[i + 1][j], dp[i][j + 1])
+                }
+            }
+        }
+        val result = ArrayList<CharDiff>(n)
+        var i = 0
+        var j = 0
+        while (i < n && j < m) {
+            when {
+                user[i].equals(correct[j], ignoreCase = true) -> {
+                    result.add(CharDiff(user[i], true))
+                    i++
+                    j++
+                }
+                // 用户多写（或写错）一个字母：标红，继续用同一个正确字母比对
+                dp[i + 1][j] >= dp[i][j + 1] -> {
+                    result.add(CharDiff(user[i], false))
+                    i++
+                }
+                // 用户漏写一个字母：跳过正确词中的该字母
+                else -> j++
+            }
+        }
+        while (i < n) {
+            result.add(CharDiff(user[i], false))
+            i++
         }
         return result
     }
