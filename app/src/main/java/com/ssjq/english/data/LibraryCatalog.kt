@@ -19,6 +19,24 @@ data class LibrarySubcategory(
 object LibraryCatalog {
 
     /**
+     * 界面显示用的词库名：中文分类 + 子分类 + 序号。
+     * 只用于展示，文件读写与 SharedPreferences 的键仍使用原始 dbName。
+     */
+    fun displayName(dbName: String): String {
+        val name = dbName.removeSuffix(".db")
+        for (category in categories) {
+            for (sub in category.subcategories) {
+                val index = sub.dbFiles.indexOf(name)
+                if (index >= 0) {
+                    val prefix = category.name.substringBefore("（")
+                    return "$prefix · ${sub.name} ${index + 1}"
+                }
+            }
+        }
+        return name
+    }
+
+    /**
      * 逐层扩大的查找顺序：当前词库 → 同子分类 → 同分类 → 其他词库。
      * 用于查词时先就近命中，避免每次都扫全部词库。
      *
@@ -116,14 +134,14 @@ object LibraryCatalog {
         ),
         // ========== GRE ==========
         LibraryCategory(
-            name = "GRE",
+            name = "美国研究生入学考试（GRE）",
             subcategories = listOf(
                 LibrarySubcategory("GRE", listOf("GRE_2", "GRE_3")),
             ),
         ),
         // ========== GMAT ==========
         LibraryCategory(
-            name = "GMAT",
+            name = "管理类研究生入学考试（GMAT）",
             subcategories = listOf(
                 LibrarySubcategory("正序", listOf("GMAT_2", "GMAT_3")),
                 LibrarySubcategory("乱序", listOf("GMATluan_2")),
@@ -131,7 +149,7 @@ object LibraryCatalog {
         ),
         // ========== SAT ==========
         LibraryCategory(
-            name = "SAT",
+            name = "美国大学入学考试（SAT）",
             subcategories = listOf(
                 LibrarySubcategory("SAT", listOf("SAT_2", "SAT_3")),
             ),

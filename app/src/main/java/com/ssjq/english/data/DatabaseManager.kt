@@ -173,6 +173,21 @@ object DatabaseManager {
     }
 
     /**
+     * 清空词库副本缓存，应用升级后调用一次。
+     * 副本只校验文件是否完整，不校验内容版本；assets 里的词库被修正后，
+     * 不清掉旧副本就会一直用旧数据。
+     */
+    fun clearCachedDatabases(context: Context) {
+        synchronized(this) {
+            pool.values.forEach { pooled ->
+                runCatching { pooled.db.close() }
+            }
+            pool.clear()
+        }
+        dbDir(context).listFiles()?.forEach { it.delete() }
+    }
+
+    /**
      * 词库是否已复制到内部存储。
      * 查词时优先扫描已复制的词库：首次为查一个词而复制整本词库代价过高。
      */
@@ -391,8 +406,8 @@ object DatabaseManager {
         return list
     }
 
-    /** 获取单个单词的完整详情 */
-    fun getWordDetail(db: SQLiteDatabase, wordId: String): WordDetail? {
+    /** 获取单个单词的完整详情。dbName 必须传入，混合词源才能把词条写回正确词库 */
+    fun getWordDetail(db: SQLiteDatabase, wordId: String, dbName: String? = null): WordDetail? {
         if (!tableExists(db, "words")) return null
         db.rawQuery("SELECT * FROM words WHERE word_id=?", arrayOf(wordId)).use { wc ->
             if (wc.moveToNext()) {
@@ -410,6 +425,7 @@ object DatabaseManager {
                     relWords = queryRelWords(db, wordId),
                     synos = querySynos(db, wordId),
                     antos = queryAntos(db, wordId),
+                    dbName = dbName,
                 )
             }
         }

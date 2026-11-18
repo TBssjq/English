@@ -8,6 +8,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -78,6 +80,7 @@ import com.ssjq.english.ui.nav.CheckInRoute
 import com.ssjq.english.ui.nav.CrazyQuizRoute
 import com.ssjq.english.ui.nav.Home
 import com.ssjq.english.ui.nav.LibraryRoute
+import com.ssjq.english.ui.nav.LibraryType
 import com.ssjq.english.ui.nav.QuizRoute
 import com.ssjq.english.ui.nav.SearchRoute
 import com.ssjq.english.ui.nav.WordDetailRoute
@@ -187,6 +190,8 @@ fun AppNav() {
      * 这里用一个略长于过场时长的时间窗把这类误触挡掉。
      */
     var navLockedUntil by remember { mutableStateOf(0L) }
+    // 1=前进，-1=返回，0=切换页签；AnimatedContent 根据它选择对应方向的动画
+    var navDirection by remember { mutableStateOf(0) }
 
     fun isNavLocked(): Boolean = SystemClock.uptimeMillis() < navLockedUntil
 
@@ -197,6 +202,7 @@ fun AppNav() {
     fun navigate(route: Any) {
         if (isNavLocked()) return
         lockNav()
+        navDirection = 1
         backStack.add(route)
     }
 
@@ -204,6 +210,7 @@ fun AppNav() {
         if (isNavLocked()) return
         if (backStack.size > 1) {
             lockNav()
+            navDirection = -1
             backStack.removeAt(backStack.lastIndex)
         }
     }
@@ -213,6 +220,7 @@ fun AppNav() {
         if (tab == currentTab && isTopLevel) return
         if (isNavLocked()) return
         lockNav()
+        navDirection = 0
         currentTab = tab
         val root: Any = when (tab) {
             MainTab.STUDY -> Home
@@ -332,11 +340,36 @@ fun AppNav() {
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (isTopLevel) Modifier.padding(bottom = 88.dp) else Modifier),
+            // 方向映射自 android/nav3-recipes 的 animations 示例：
+            // 前进从右进、旧页向左；返回从左进、旧页向右；页签切换用淡入淡出加轻微缩放。
             transitionSpec = {
-                slideInHorizontally(initialOffsetX = { it / 6 }, animationSpec = tween(280)) +
-                    fadeIn(tween(280)) togetherWith
-                    slideOutHorizontally(targetOffsetX = { -it / 6 }, animationSpec = tween(280)) +
-                    fadeOut(tween(280))
+                when (navDirection) {
+                    -1 ->
+                        (slideInHorizontally(
+                            initialOffsetX = { -it },
+                            animationSpec = tween(280)
+                        ) + fadeIn(tween(280))) togetherWith
+                            (slideOutHorizontally(
+                                targetOffsetX = { it },
+                                animationSpec = tween(280)
+                            ) + fadeOut(tween(280)))
+
+                    0 ->
+                        (scaleIn(initialScale = 0.96f, animationSpec = tween(240)) +
+                            fadeIn(tween(240))) togetherWith
+                            (scaleOut(targetScale = 1.04f, animationSpec = tween(200)) +
+                                fadeOut(tween(200)))
+
+                    else ->
+                        (slideInHorizontally(
+                            initialOffsetX = { it },
+                            animationSpec = tween(280)
+                        ) + fadeIn(tween(280))) togetherWith
+                            (slideOutHorizontally(
+                                targetOffsetX = { -it },
+                                animationSpec = tween(280)
+                            ) + fadeOut(tween(280)))
+                }
             },
             label = "nav",
         ) { route ->
@@ -353,16 +386,23 @@ fun AppNav() {
                     navigate(WordStudyRoute(reviewDb, reviewQueue = wordIds))
                 },
                 onStartStudy = { studyDb -> navigate(WordStudyRoute(studyDb)) },
+                onOpenLibrary = { libraryDb, type, showAll ->
+                    navigate(LibraryRoute(libraryDb, type, showAll))
+                },
+                onOpenWord = { db, wordId -> navigate(WordDetailRoute(db, wordId)) },
             )
 
-            is CheckInRoute -> CheckInScreen(onBack = { back() })
+            // 这两个是页签根页面，backStack 只有一项，back() 不会生效；
+            // 返回箭头改为切回「学习」页签
+            is CheckInRoute -> CheckInScreen(onBack = { selectTab(MainTab.STUDY) })
 
-            is AboutRoute -> AboutScreen(onBack = { back() })
+            is AboutRoute -> AboutScreen(onBack = { selectTab(MainTab.STUDY) })
 
             is WordListRoute -> WordListScreen(
                 dbName = route.dbName,
                 onBack = { back() },
-                onWordClick = { navigate(WordStudyRoute(route.dbName, startWordId = it)) },
+                // 点单词看详情；进入背诵走下方专门的「开始/继续背诵」按钮
+                onWordClick = { navigate(WordDetailRoute(route.dbName, it)) },
                 onStartStudy = { navigate(WordStudyRoute(route.dbName)) },
                 onSearch = { navigate(SearchRoute(route.dbName)) },
                 onOpenLibrary = { type -> navigate(LibraryRoute(route.dbName, type)) },
@@ -374,7 +414,8 @@ fun AppNav() {
                 wordId = route.wordId,
                 onBack = { back() },
                 onNavigateToWord = { targetDb, targetWordId ->
-                    navigate(WordStudyRoute(targetDb, startWordId = targetWordId))
+                    // 词库搜索只是看一下词条，进入详情而不是另一本词库的背诵会话
+                    navigate(WordDetailRoute(targetDb, targetWordId))
                 },
             )
 
@@ -384,7 +425,8 @@ fun AppNav() {
                 reviewQueue = route.reviewQueue,
                 onBack = { back() },
                 onNavigateToWord = { targetDb, targetWordId ->
-                    navigate(WordStudyRoute(targetDb, startWordId = targetWordId))
+                    // 词库搜索只是看一下词条，进入详情而不是另一本词库的背诵会话
+                    navigate(WordDetailRoute(targetDb, targetWordId))
                 },
             )
 
@@ -392,13 +434,15 @@ fun AppNav() {
                 dbName = route.dbName,
                 type = route.type,
                 onBack = { back() },
-                onWordClick = { navigate(WordStudyRoute(route.dbName, startWordId = it)) },
+                // 点条目看单词详情，不再直接进背诵会话；全部词库视图下用条目自身词库
+                onWordClick = { db, wordId -> navigate(WordDetailRoute(db, wordId)) },
+                initialShowAll = route.showAll,
             )
 
             is SearchRoute -> SearchScreen(
                 dbName = route.dbName,
                 onBack = { back() },
-                onWordClick = { navigate(WordStudyRoute(route.dbName, startWordId = it)) },
+                onWordClick = { navigate(WordDetailRoute(route.dbName, it)) },
             )
 
             is QuizRoute -> QuizScreen(
@@ -406,14 +450,15 @@ fun AppNav() {
                 questionCount = route.count,
                 mode = route.mode,
                 sourceWords = route.sourceWords,
+                sourceKey = route.sourceKey,
                 onBack = { back() },
                 onOpenWord = { wordDb, wordId -> navigate(WordDetailRoute(wordDb, wordId)) },
             )
 
             is CrazyQuizRoute -> CrazyQuizScreen(
                 onBack = { back() },
-                onStartQuiz = { _, words ->
-                    navigate(QuizRoute("crazy_quiz", words.size, null, words))
+                onStartQuiz = { _, words, key, count ->
+                    navigate(QuizRoute("crazy_quiz", count, null, words, key))
                 },
             )
         }

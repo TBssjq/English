@@ -5,6 +5,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ssjq.english.data.DatabaseManager
+import com.ssjq.english.data.QuizRecordSummary
+import com.ssjq.english.data.UserManager
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.service.PronunciationPlayer
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +26,8 @@ class QuizState(
     private val fixedMode: QuizMode? = null,
     /** 是否自动播放发音 */
     autoPlayAudio: Boolean = false,
+    /** 题源标识，疯狂刷题退出后靠它判断能否继续同一批题 */
+    private val sourceKey: String? = null,
 ) {
     var uiState by mutableStateOf(QuizUiState(isLoading = true, selectedMode = fixedMode))
         private set
@@ -47,15 +51,31 @@ class QuizState(
     /** 完成上报是否已消费过：防止同一轮结果被重复累加打卡与刷题记录 */
     private var reported: Boolean = false
 
+    /** 已加载标记：从单词详情返回时复用同一状态，不能重新出题把用户送回第 1 题 */
+    private var loaded: Boolean = false
+
+    /** 本轮开始前的上一次测验记录，跟随状态一起复用 */
+    var previousRecord: QuizRecordSummary? = null
+        private set
+
+    /** 当前题量上限，测验中可调整；调整后重新出题 */
+    private var _questionCountLimit by mutableStateOf(questionCount)
+    val questionCountLimit: Int get() = _questionCountLimit
+
+    /** 本轮题目的随机种子：断点续做靠它重建出同一套题 */
+    private var currentSeed: Long = 0L
+
     /** 当前是否处于「错题回顾」轮：回顾轮不参与打卡统计 */
     private var isReviewRound: Boolean = false
 
     /** 发音播放器 */
     private val pronunciationPlayer = PronunciationPlayer()
 
-    /** 加载题目（异步） */
+    /** 加载题目（异步）。已经加载过则保持当前进度 */
     suspend fun load() {
+        if (loaded) return
         uiState = uiState.copy(isLoading = true)
+        previousRecord = withContext(Dispatchers.IO) { UserManager.getLastQuizRecord() }
         val words = if (sourceWords.isNotEmpty()) {
             sourceWords
         } else {
@@ -63,7 +83,7 @@ class QuizState(
                 val db = DatabaseManager.openDatabase(context, dbName)
                 try {
                     val list = DatabaseManager.getWordList(db)
-                    list.take(80).mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
+                    list.take(80).mapNotNull { DatabaseManager.getWordDetail(db, it.wordId, dbName) }
                 } finally {
                     DatabaseManager.release(db)
                 }
@@ -73,18 +93,21 @@ class QuizState(
         originalWords = words
         isReviewRound = false
         reported = false
-        regenerateQuestions()
+        // 有可用断点就回到上次的题号，否则重新出题
+        if (!tryRestore()) regenerateQuestions()
+        loaded = true
     }
 
-    /** 根据 fixedMode 生成题目 */
-    private fun regenerateQuestions() {
+    /** 根据 fixedMode 生成题目。seed 决定题序，断点恢复时传入同一个值 */
+    private fun regenerateQuestions(seed: Long = System.nanoTime()) {
         val words = loadedWords
         if (words.isEmpty()) {
             uiState = QuizUiState(isLoading = false, isFinished = true, selectedMode = fixedMode)
             return
         }
-        val count = questionCount.coerceAtMost(words.size).coerceAtLeast(1)
-        questions = QuizEngine.generateQuestions(words, count, fixedMode = fixedMode)
+        val count = _questionCountLimit.coerceAtMost(words.size).coerceAtLeast(1)
+        questions = QuizEngine.generateQuestions(words, count, fixedMode = fixedMode, seed = seed)
+        currentSeed = seed
         modeStats.clear()
         questions.groupBy { it.mode }.forEach { (mode, qs) ->
             modeStats[mode] = 0 to qs.size
@@ -108,6 +131,87 @@ class QuizState(
     }
 
     /**
+     * 用上次保存的断点恢复：同词库、同模式、同 seed 才能重建出同一套题。
+     * 数据损坏或参数不匹配时返回 false，由调用方重新出题。
+     */
+    private fun tryRestore(): Boolean {
+        val raw = UserManager.getQuizProgress() ?: return false
+        val obj = try {
+            org.json.JSONObject(raw)
+        } catch (e: Exception) {
+            // 存档损坏时按重新开始处理，不能让解析异常冒到界面
+            return false
+        }
+        if (obj.optString("dbName") != dbName) return false
+        if (obj.optString("mode") != (fixedMode?.label ?: "")) return false
+        if (obj.optString("sourceKey") != (sourceKey ?: "")) return false
+        if (obj.optInt("requestedCount", 0) != _questionCountLimit) return false
+        val seed = obj.optLong("seed", 0L)
+        val count = obj.optInt("count", 0)
+        val index = obj.optInt("index", 0)
+        if (seed == 0L || count <= 0) return false
+        val rebuilt = QuizEngine.generateQuestions(loadedWords, count, fixedMode, seed = seed)
+        if (rebuilt.isEmpty() || index !in rebuilt.indices) return false
+        questions = rebuilt
+        currentSeed = seed
+        _questionCountLimit = count
+        modeStats.clear()
+        rebuilt.groupBy { it.mode }.forEach { (mode, qs) ->
+            modeStats[mode] = 0 to qs.size
+        }
+        val wrongIds = obj.optJSONArray("wrongIds")
+            ?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }
+            ?: emptyList()
+        val wrongDetails = rebuilt.map { it.word }.filter { it.wordId in wrongIds }.distinct()
+        uiState = QuizUiState(
+            isLoading = false,
+            currentIndex = index,
+            totalQuestions = rebuilt.size,
+            currentQuestion = rebuilt[index],
+            correctCount = obj.optInt("correct", 0),
+            wrongCount = obj.optInt("wrong", 0),
+            wrongWords = wrongDetails,
+            modeStats = modeStats.toMap(),
+            selectedMode = fixedMode,
+        )
+        return true
+    }
+
+    /**
+     * 保存断点：答题与切题后调用，进程被杀也能接着做。
+     * 答完还没点下一题时把题号前进一位，退出再进入不会重复答同一题。
+     */
+    fun persistProgress(answered: Boolean = false) {
+        if (!loaded || isReviewRound || questions.isEmpty() || uiState.isFinished) return
+        val savedIndex = (uiState.currentIndex + if (answered) 1 else 0)
+            .coerceIn(0, questions.lastIndex)
+        val json = org.json.JSONObject().apply {
+            put("dbName", dbName)
+            put("mode", fixedMode?.label ?: "")
+            put("sourceKey", sourceKey ?: "")
+            put("requestedCount", _questionCountLimit)
+            put("count", questions.size)
+            put("seed", currentSeed)
+            put("index", savedIndex)
+            put("correct", uiState.correctCount)
+            put("wrong", uiState.wrongCount)
+            put("wrongIds", org.json.JSONArray(uiState.wrongWords.map { it.wordId }))
+            put("sourceIds", org.json.JSONArray(loadedWords.map { it.wordId }))
+        }.toString()
+        UserManager.saveQuizProgress(json)
+    }
+
+    /** 调整题量并重新出题；旧断点同时作废 */
+    fun setQuestionCount(count: Int) {
+        require(count > 0) { "题量必须大于 0" }
+        if (count == _questionCountLimit) return
+        _questionCountLimit = count
+        reported = false
+        UserManager.clearQuizProgress()
+        regenerateQuestions()
+    }
+
+    /**
      * 是否需要自动发音。
      *
      * 旧实现漏掉了 AudioSpelling（听音拼写）：题干写着「请听发音拼写单词」，
@@ -125,6 +229,7 @@ class QuizState(
             is QuizIntent.SubmitSpelling -> handleSubmitSpelling()
             is QuizIntent.NextQuestion -> handleNextQuestion()
             is QuizIntent.ReplayAudio -> handleReplayAudio()
+            is QuizIntent.SkipQuestion -> handleSkip(intent.markWrong)
             is QuizIntent.Restart -> handleRestart()
             is QuizIntent.ReviewWrong -> handleReviewWrong()
         }
@@ -142,8 +247,10 @@ class QuizState(
             selectedOption = option,
             correctCount = uiState.correctCount + if (isCorrect) 1 else 0,
             wrongCount = uiState.wrongCount + if (isCorrect) 0 else 1,
+            streak = if (isCorrect) uiState.streak + 1 else 0,
             wrongWords = if (isCorrect) uiState.wrongWords else uiState.wrongWords + q.word,
         )
+        persistProgress(answered = true)
     }
 
     private fun handleUpdateSpelling(input: String) {
@@ -162,8 +269,10 @@ class QuizState(
             selectedOption = uiState.spellingInput,
             correctCount = uiState.correctCount + if (isCorrect) 1 else 0,
             wrongCount = uiState.wrongCount + if (isCorrect) 0 else 1,
+            streak = if (isCorrect) uiState.streak + 1 else 0,
             wrongWords = if (isCorrect) uiState.wrongWords else uiState.wrongWords + q.word,
         )
+        persistProgress(answered = true)
     }
 
     private fun handleNextQuestion() {
@@ -174,6 +283,8 @@ class QuizState(
         val next = uiState.currentIndex + 1
         if (next >= uiState.totalQuestions) {
             uiState = uiState.copy(isFinished = true)
+            // 本轮已完成，断点不再有意义
+            UserManager.clearQuizProgress()
             return
         }
         val nextQ = questions[next]
@@ -187,12 +298,27 @@ class QuizState(
         if (shouldAutoSpeak(nextQ.mode)) {
             speak(nextQ.word.headWord, type = 2)
         }
+        persistProgress()
     }
 
     private fun handleReplayAudio() {
         val q = uiState.currentQuestion ?: return
         // 传英文单词（correctAnswer 在 AudioSelect 模式下是中文释义，有道 API 不支持）
         speak(q.word.headWord, type = 2)
+    }
+
+    /** 主动跳过本题；markWrong 为真时同时把单词记入错题本 */
+    private fun handleSkip(markWrong: Boolean) {
+        val q = uiState.currentQuestion ?: return
+        if (uiState.answerResult !is AnswerResult.Idle) return
+        updateStats(q.mode, false)
+        uiState = uiState.copy(
+            answerResult = AnswerResult.Skipped(markedWrong = markWrong),
+            streak = 0,
+            wrongCount = uiState.wrongCount + if (markWrong) 1 else 0,
+            wrongWords = if (markWrong) uiState.wrongWords + q.word else uiState.wrongWords,
+        )
+        persistProgress(answered = true)
     }
 
     /**
@@ -205,6 +331,8 @@ class QuizState(
         loadedWords = originalWords
         isReviewRound = false
         reported = false
+        // 新一轮从头开始，旧断点作废
+        UserManager.clearQuizProgress()
         regenerateQuestions()
     }
 

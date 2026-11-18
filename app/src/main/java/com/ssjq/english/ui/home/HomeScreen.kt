@@ -92,6 +92,7 @@ import com.ssjq.english.data.UserManager
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.ssjq.english.ui.glass.LocalAppBackdrop
+import com.ssjq.english.ui.nav.LibraryType
 import com.ssjq.english.ui.common.FancyToast
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.glass.GlassQuality
@@ -121,6 +122,10 @@ fun HomeScreen(
     onOpenCrazyQuiz: () -> Unit = {},
     onStartReview: (String, List<String>) -> Unit,
     onStartStudy: (String) -> Unit,
+    /** 打开错题本 / 收藏夹；第三个参数为是否直接展示全部词库的条目 */
+    onOpenLibrary: (dbName: String, type: LibraryType, showAll: Boolean) -> Unit,
+    /** 打开某个单词的详情页（首页跨词库搜索结果） */
+    onOpenWord: (dbName: String, wordId: String) -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -134,7 +139,10 @@ fun HomeScreen(
     fun shareApp() {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, "来和我一起用这款背单词 App 学习英语吧！")
+            putExtra(
+                Intent.EXTRA_TEXT,
+                "来和我一起用这款背单词 App 学习英语吧！\nGitHub 仓库：https://github.com/TBssjq/English",
+            )
         }
         context.startActivity(Intent.createChooser(intent, "分享 App"))
     }
@@ -197,16 +205,25 @@ fun HomeScreen(
     var dueReviewIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var dailyGoal by remember { mutableStateOf(UserManager.getDailyGoal()) }
     var showGoalPicker by remember { mutableStateOf(false) }
+    // 错题与收藏的总数按全部词库统计：跨词库测验的错题分散在各库
+    var wrongTotal by remember { mutableStateOf(0) }
+    var favoriteTotal by remember { mutableStateOf(0) }
     fun refreshCheckInStats() {
         homeScope.launch {
             // IO 线程只负责取值，状态回到主线程赋值
             val snapshot = withContext(Dispatchers.IO) {
                 val book = UserManager.getCurrentBook()
                 val due = if (book != null) ReviewScheduler.dueWordIds(book) else emptyList()
-                CheckInManager.stats() to due
+                Triple(
+                    CheckInManager.stats(),
+                    due,
+                    UserLibrary.allWrongWords().size to UserLibrary.allFavorites().size,
+                )
             }
             checkInStats = snapshot.first
             dueReviewIds = snapshot.second
+            wrongTotal = snapshot.third.first
+            favoriteTotal = snapshot.third.second
         }
     }
     LaunchedEffect(currentBook) { refreshCheckInStats() }
@@ -479,6 +496,10 @@ fun HomeScreen(
                         },
                         onStartReview = { onStartReview(book, dueReviewIds) },
                         onBrowseAll = { showAllBooks = true },
+                        wrongTotal = wrongTotal,
+                        favoriteTotal = favoriteTotal,
+                        onOpenWrong = { onOpenLibrary(book, LibraryType.WRONG, true) },
+                        onOpenFavorite = { onOpenLibrary(book, LibraryType.FAVORITE, true) },
                     )
                 }
 
@@ -511,6 +532,10 @@ fun HomeScreen(
                         )
                         Spacer(Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
+                            val todayWords = checkInStats.todayRecord?.wordsLearned ?: 0
+                            val goalReached = todayWords >= dailyGoal
+                            val remainingWords = (dailyGoal - todayWords).coerceAtLeast(0)
+                            val streakDays = checkInStats.currentStreak
                             Text(
                                 currentUsername,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -518,13 +543,22 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                             )
                             Text(
-                                "欢迎背单词",
+                                // 复用欢迎语这一行：连续记录与临门一脚都在这里；
+                                // 新增行会把固定高度的欢迎卡片挤出屏幕
+                                when {
+                                    goalReached && streakDays > 0 -> "连续 $streakDays 天，真稳！"
+                                    goalReached -> "今日目标达成！"
+                                    remainingWords <= 5 && streakDays > 0 -> "就差 $remainingWords 词，别断 $streakDays 天"
+                                    remainingWords <= 5 -> "就差 $remainingWords 词！"
+                                    streakDays > 0 -> "欢迎回来，连续 $streakDays 天"
+                                    else -> "欢迎背单词"
+                                },
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
-                            val todayWords = checkInStats.todayRecord?.wordsLearned ?: 0
-                            val goalReached = todayWords >= dailyGoal
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -532,7 +566,7 @@ fun HomeScreen(
                                 Text(
                                     "今日 $todayWords / $dailyGoal 词",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (goalReached) {
+                                    color = if (goalReached || remainingWords <= 5) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -809,7 +843,8 @@ fun HomeScreen(
                         items(wordSearchResults, key = { "${it.dbName}-${it.wordId}" }) { item ->
                             WordSearchResultCard(
                                 item = item,
-                                onClick = { pickBook("${item.dbName}.db") },
+                                // 直接看该词的详情，不再顺手把当前词库切走
+                                onClick = { onOpenWord(item.dbName, item.wordId) },
                                 backdrop = liquidBackdrop,
                             )
                         }
@@ -1408,6 +1443,10 @@ private fun CurrentBookPanel(
     onStartStudy: () -> Unit,
     onStartReview: () -> Unit,
     onBrowseAll: () -> Unit,
+    wrongTotal: Int,
+    favoriteTotal: Int,
+    onOpenWrong: () -> Unit,
+    onOpenFavorite: () -> Unit,
 ) {
     LiquidCard(
         backdrop = backdrop,
@@ -1431,7 +1470,7 @@ private fun CurrentBookPanel(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                dbName.removeSuffix(".db"),
+                LibraryCatalog.displayName(dbName),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -1476,6 +1515,40 @@ private fun CurrentBookPanel(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("更换词库 / 浏览全部", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+            }
+            Spacer(Modifier.height(10.dp))
+            // 错题本与收藏夹直接放在主页：之前入口藏在词库列表页，
+            // 加上「开始学习」已直达背诵，实际上很难再走到那里
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                LiquidButton(
+                    onClick = onOpenWrong,
+                    backdrop = backdrop,
+                    height = 46.dp,
+                    surfaceColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        "错题本 $wrongTotal",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
+                }
+                LiquidButton(
+                    onClick = onOpenFavorite,
+                    backdrop = backdrop,
+                    height = 46.dp,
+                    surfaceColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        "收藏夹 $favoriteTotal",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                    )
+                }
             }
         }
     }

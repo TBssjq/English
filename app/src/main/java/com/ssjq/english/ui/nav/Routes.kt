@@ -22,7 +22,14 @@ data class WordStudyRoute(
 )
 
 /** 快速测验页：mode=null 时 4 种模式随机切换；非 null 时固定该模式 */
-data class QuizRoute(val dbName: String, val count: Int = 20, val mode: String? = null, val sourceWords: List<com.ssjq.english.data.WordDetail> = emptyList())
+data class QuizRoute(
+    val dbName: String,
+    val count: Int = 20,
+    val mode: String? = null,
+    val sourceWords: List<com.ssjq.english.data.WordDetail> = emptyList(),
+    /** 疯狂刷题的题源标识，用于退出后按同一批词恢复进度 */
+    val sourceKey: String? = null,
+)
 
 /** 搜索页 */
 data class SearchRoute(val dbName: String)
@@ -30,8 +37,16 @@ data class SearchRoute(val dbName: String)
 /** 用户词单类型：错题本 / 收藏夹 */
 enum class LibraryType { WRONG, FAVORITE }
 
-/** 用户词单页：错题本 / 收藏夹 */
-data class LibraryRoute(val dbName: String, val type: LibraryType)
+/**
+ * 用户词单页：错题本 / 收藏夹。
+ * showAll 为真时进入后直接展示全部词库的条目 —— 跨词库测验的错题分散在各库，
+ * 只看当前词库会让人以为没有记录。
+ */
+data class LibraryRoute(
+    val dbName: String,
+    val type: LibraryType,
+    val showAll: Boolean = false,
+)
 
 /** 疯狂刷题题源类型 */
 enum class CrazyQuizSource { WRONG, FAVORITE, LIBRARY }

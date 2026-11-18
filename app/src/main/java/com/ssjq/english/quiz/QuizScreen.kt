@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +83,28 @@ fun modeFromString(mode: String?): QuizMode? = when (mode) {
  * @param sourceWords 可选：自定义词源（为空时从词库取前 80 词）
  * @param onBack 返回
  */
+/**
+ * 同一组出题参数对应的测验状态缓存。
+ * 从测验页点「查看单词」再返回时 Compose 会重建页面，不复用状态就会重新出题，
+ * 把用户送回第 1 题。最多保留 8 轮，避免长会话持续累积。
+ */
+private object QuizStateCache {
+    // 只保留当前与上一轮：一轮含上百个完整词条，留太多会明显占内存
+    private val states = object : LinkedHashMap<String, QuizState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, QuizState>?) = size > 2
+    }
+
+    fun get(key: String): QuizState? = states[key]
+
+    fun put(key: String, state: QuizState) {
+        states[key] = state
+    }
+
+    fun remove(key: String) {
+        states.remove(key)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QuizScreen(
@@ -89,26 +113,41 @@ fun QuizScreen(
     /** 模式名：null/空=随机，"EnSelectCn"/"CnSelectEn"/"AudioSelect"/"Spelling"=固定 */
     mode: String? = null,
     sourceWords: List<WordDetail> = emptyList(),
+    /** 疯狂刷题题源标识，用于断点续做 */
+    sourceKey: String? = null,
     onBack: () -> Unit,
     /** 从结果页打开某个单词的卡片：参数为词库名与 wordId */
     onOpenWord: (String, String) -> Unit,
 ) {
     val context = LocalContext.current
+    val routeSourceKey = sourceKey
     val fixedMode = remember(mode) { modeFromString(mode) }
     // key 必须带上出题参数：旧实现无 key，同一路由复用换词库/换题量时
     // 会继续沿用上一轮的 QuizState，出的还是旧词库的题
     // 不要用整个 sourceWords 列表做 key：List.equals 会逐元素深度比较，
     // 疯狂刷题最多 100 个深嵌套 WordDetail，每次重组都要跑一次 O(n·depth) 比较。
     // 用「数量 + 首尾 wordId」作为轻量且足够唯一的 key。
-    val state = remember(
+    val stateKey = remember(
         dbName,
         questionCount,
         sourceWords.size,
         sourceWords.firstOrNull()?.wordId,
         sourceWords.lastOrNull()?.wordId,
         fixedMode,
+        routeSourceKey,
     ) {
-        QuizState(
+        listOf(
+            routeSourceKey.orEmpty(),
+            dbName,
+            questionCount.toString(),
+            sourceWords.size.toString(),
+            sourceWords.firstOrNull()?.wordId.orEmpty(),
+            sourceWords.lastOrNull()?.wordId.orEmpty(),
+            fixedMode?.label ?: "random",
+        ).joinToString("|")
+    }
+    val state = remember(stateKey) {
+        QuizStateCache.get(stateKey) ?: QuizState(
             context = context,
             dbName = dbName,
             sourceWords = sourceWords,
@@ -116,7 +155,25 @@ fun QuizScreen(
             fixedMode = fixedMode,
             // 自动发音是用户偏好，跨轮次保留
             autoPlayAudio = UserLibrary.autoPlayAudioEnabled(),
-        )
+            sourceKey = routeSourceKey,
+        ).also { QuizStateCache.put(stateKey, it) }
+    }
+
+    /**
+     * 打开单词详情。疯狂刷题传入的 dbName 是占位符，必须使用词条自带的真实词库名，
+     * 否则详情页会去打开不存在的词库而闪退。
+     */
+    fun openWordDetail(word: WordDetail) {
+        val target = word.dbName?.takeIf { it.isNotBlank() && it != "crazy_quiz" }
+        if (target == null) {
+            android.widget.Toast.makeText(
+                context,
+                "该单词缺少词库信息，暂时无法打开",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+        onOpenWord(target, word.wordId)
     }
 
     LaunchedEffect(state) { state.load() }
@@ -130,13 +187,25 @@ fun QuizScreen(
     var favoriteToggle by remember { mutableStateOf(0) }
     // 答过题后退出需要确认，避免误触丢失本轮进度
     var showExitConfirm by remember { mutableStateOf(false) }
+
+    /** 退出测验：先落盘断点，再丢掉内存缓存，下次进入只能从持久化进度恢复 */
+    fun exitQuiz() {
+        state.persistProgress(answered = uiState.answerResult !is AnswerResult.Idle)
+        QuizStateCache.remove(stateKey)
+        onBack()
+    }
     // 全应用共享的背景采样层
     val liquidBackdrop = LocalAppBackdrop.current
 
     // 每次答错就地写入错题本：整轮结束才批量写入的旧做法，遇到中途退出、
     // 结果页之前杀进程，这一轮的错题就全丢了
     LaunchedEffect(uiState.answerResult, uiState.currentIndex) {
-        if (uiState.answerResult !is AnswerResult.Wrong) return@LaunchedEffect
+        val shouldMark = when (val result = uiState.answerResult) {
+            is AnswerResult.Wrong -> true
+            is AnswerResult.Skipped -> result.markedWrong
+            else -> false
+        }
+        if (!shouldMark) return@LaunchedEffect
         val word = uiState.currentQuestion?.word ?: return@LaunchedEffect
         val entry = WordEntry(
             wordId = word.wordId,
@@ -152,6 +221,8 @@ fun QuizScreen(
     LaunchedEffect(uiState.isFinished, uiState.totalQuestions) {
         if (!uiState.isFinished) return@LaunchedEffect
         val report = state.consumeFinishReport() ?: return@LaunchedEffect
+        // 本轮已结束，清掉缓存：否则同参数再进测验会直接看到上一轮的结果页
+        QuizStateCache.remove(stateKey)
         // 整段放到 IO：accumulate() 会把全部打卡记录 JSON 反序列化再写回，
         // saveQuizRecord() 也会解析/序列化刷题记录，记录较多时在主线程会造成卡顿
         withContext(Dispatchers.IO) {
@@ -194,7 +265,7 @@ fun QuizScreen(
                             if (!uiState.isFinished && hasProgress) {
                                 showExitConfirm = true
                             } else {
-                                onBack()
+                                exitQuiz()
                             }
                         },
                     ) {
@@ -202,6 +273,35 @@ fun QuizScreen(
                     }
                 },
                 actions = {
+                    // 题目数量：切换后按新题量重新出题
+                    var showCountMenu by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(onClick = { showCountMenu = true }) {
+                            Text(
+                                "${state.questionCountLimit} 题",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showCountMenu,
+                            onDismissRequest = { showCountMenu = false },
+                        ) {
+                            listOf(10, 20, 30, 50, 100).forEach { option ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (option == state.questionCountLimit) "✓ $option 题" else "$option 题",
+                                        )
+                                    },
+                                    onClick = {
+                                        showCountMenu = false
+                                        state.setQuestionCount(option)
+                                    },
+                                )
+                            }
+                        }
+                    }
                     // 自动播放发音开关
                     IconButton(
                         onClick = {
@@ -289,11 +389,12 @@ fun QuizScreen(
                 // 否则结果页「错题回顾(N)」的数字会大于实际回顾题量
                 wrongWords = state.distinctWrongCount(),
                 wrongWordList = uiState.wrongWords.distinct(),
-                onOpenWord = { word -> onOpenWord(word.dbName ?: dbName, word.wordId) },
+                onOpenWord = { word -> openWordDetail(word) },
                 modeStats = uiState.modeStats,
                 onRestart = { state.dispatch(QuizIntent.Restart) },
                 onReviewWrong = { state.dispatch(QuizIntent.ReviewWrong) },
                 modifier = Modifier.fillMaxSize().padding(padding),
+                previousRecord = state.previousRecord,
             )
         } else {
             Column(
@@ -360,11 +461,12 @@ fun QuizScreen(
                     correctAnswer = uiState.currentQuestion?.correctAnswer ?: "",
                     exampleSentence = uiState.currentQuestion?.word?.sentences?.firstOrNull()?.content,
                     onNext = { state.dispatch(QuizIntent.NextQuestion) },
+                    onSkip = { state.dispatch(QuizIntent.SkipQuestion(it)) },
+                    streak = uiState.streak,
+                    word = uiState.currentQuestion?.word,
                     // 答错时就地进入该单词的卡片，不必等到结果页
                     onOpenWord = {
-                        uiState.currentQuestion?.word?.let { word ->
-                            onOpenWord(word.dbName ?: dbName, word.wordId)
-                        }
+                        uiState.currentQuestion?.word?.let { openWordDetail(it) }
                     },
                     backdrop = liquidBackdrop,
                 )
@@ -375,15 +477,15 @@ fun QuizScreen(
             AlertDialog(
                 onDismissRequest = { showExitConfirm = false },
                 title = { Text("退出测验") },
-                text = { Text("当前进度不会保存，确定退出？") },
+                text = { Text("当前进度已保存，下次选择同一题源和题量可以继续，确定退出？") },
                 confirmButton = {
                     TextButton(
                         onClick = {
                             showExitConfirm = false
-                            onBack()
+                            exitQuiz()
                         }
                     ) {
-                        Text("退出")
+                        Text("退出并保存")
                     }
                 },
                 dismissButton = {

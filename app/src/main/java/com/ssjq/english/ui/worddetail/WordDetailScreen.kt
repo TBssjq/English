@@ -47,6 +47,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Star
@@ -187,7 +188,7 @@ private fun SearchResultRow(
                 },
             ) {
                 Text(
-                    result.dbName,
+                    LibraryCatalog.displayName(result.dbName),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isCurrent) {
@@ -210,12 +211,13 @@ fun WordDetailScreen(
     wordQueue: List<String>? = null,
     startIndex: Int = 0,
     onNavigateToWord: (dbName: String, wordId: String) -> Unit = { _, _ -> },
+    /** 是否记录背诵进度。复习队列与随手看词不应覆盖正式进度 */
+    trackProgress: Boolean = false,
 ) {
     val context = LocalContext.current
     val reviewScope = rememberCoroutineScope()
     var detail by remember { mutableStateOf<WordDetail?>(null) }
     var loading by remember { mutableStateOf(true) }
-    var revealed by remember { mutableStateOf(false) }
 
     // 背诵会话模式：wordQueue 非空时，按队列顺序遍历单词
     val isStudyMode = wordQueue != null
@@ -249,10 +251,19 @@ fun WordDetailScreen(
         currentIndex = wordHistory.removeAt(wordHistory.lastIndex)
     }
     val currentWordId = queue?.getOrNull(currentIndex) ?: wordId
+    // 翻面状态随单词重置：评分直接前进后，下一张卡片必须回到未翻面状态
+    var revealed by remember(currentWordId) { mutableStateOf(false) }
+    // 普通背词模式的自动发音，与测验共用同一用户偏好
+    var autoSpeak by remember { mutableStateOf(UserLibrary.autoPlayAudioEnabled()) }
+    // 同一单词只计入一次学习量，反复翻面不重复累加
+    var learnedMarked by remember(currentWordId) { mutableStateOf(false) }
+    // 点「模糊」后先翻面，等用户在认识/不认识之间做最终判断
+    var fuzzyPending by remember(currentIndex) { mutableStateOf(false) }
     val total = queue?.size ?: 1
-    // 进入背诵模式时立即把当前进度持久化（下一次继续从这里）
-    LaunchedEffect(currentIndex, isStudyMode) {
-        if (isStudyMode) UserLibrary.saveStudyIndex(dbName, currentIndex)
+    // 只有正式背诵会话才写进度：复习队列与"只看一眼"的详情页下标语义不同，
+    // 无条件写入会把正常背诵进度挪到无关位置
+    LaunchedEffect(currentIndex, isStudyMode, trackProgress) {
+        if (isStudyMode && trackProgress) UserLibrary.saveStudyIndex(dbName, currentIndex)
     }
 
     // 学习时长追踪：进入页面开始计时，离开时按分钟累加到打卡记录
@@ -308,7 +319,7 @@ fun WordDetailScreen(
                 val hit = DatabaseManager.findHeadWordId(db, query) ?: return@withContext null
                 // 探测到词头却取不到词条说明该库数据不完整，跳过这本词库继续找，
                 // 不在此处抛异常：协程里的异常会让弹窗永远停在加载态
-                DatabaseManager.getWordDetail(db, hit.first)
+                DatabaseManager.getWordDetail(db, hit.first, name)
             } finally {
                 DatabaseManager.release(db)
             }
@@ -460,6 +471,11 @@ fun WordDetailScreen(
     val speak: (String, Int) -> Unit = { word, type ->
         pronunciationPlayer.speak(word, type)
     }
+    // 普通模式自动发音：切到新词时播放，开关状态与测验共用。
+    // detail 参与 key：首次进入时它还在加载，不带上就永远不会触发第一次发音
+    LaunchedEffect(currentWordId, detail?.wordId, autoSpeak) {
+        if (autoSpeak) detail?.headWord?.let { speak(it, 2) }
+    }
 
     LaunchedEffect(dbName, currentWordId) {
         loading = true
@@ -469,7 +485,7 @@ fun WordDetailScreen(
         detail = withContext(Dispatchers.IO) {
             val db = DatabaseManager.openDatabase(context, dbName)
             try {
-                DatabaseManager.getWordDetail(db, currentWordId)
+                DatabaseManager.getWordDetail(db, currentWordId, dbName)
             } finally {
                 DatabaseManager.release(db)
             }
@@ -504,6 +520,23 @@ fun WordDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            autoSpeak = !autoSpeak
+                            UserLibrary.setAutoPlayAudio(autoSpeak)
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Headphones,
+                            contentDescription = if (autoSpeak) "关闭自动发音" else "开启自动发音",
+                            tint = if (autoSpeak) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            },
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                     IconButton(onClick = { toggleFavorite() }) {
                         Icon(
                             imageVector = Icons.Filled.Star,
@@ -530,6 +563,25 @@ fun WordDetailScreen(
                 .fillMaxSize()
                 .background(backgroundBrush)
         ) {
+            // 词条不存在时（复习队列残留、词库换版本后 word_id 变更）给出可返回的提示，
+            // 否则整页只有顶栏与评分按钮，点什么都没反应
+            if (!loading && detail == null) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        "该单词在当前词库中不存在",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = onBack, shape = RoundedCornerShape(14.dp)) {
+                        Text("返回")
+                    }
+                }
+            }
             if (loading) {
                 // 骨架屏：模拟 Hero 区 + 释义区布局，比转圈更有"内容正在浮现"感
                 DetailSkeleton()
@@ -623,7 +675,10 @@ fun WordDetailScreen(
                                 revealed = false
                             } else {
                                 revealed = true
-                                markLearnedOnce()
+                                if (!learnedMarked) {
+                                    learnedMarked = true
+                                    markLearnedOnce()
+                                }
                             }
                         },
                     ) {
@@ -681,9 +736,28 @@ fun WordDetailScreen(
                                                 }
                                             }
                                         }
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically) {
                                             CompactPronounceButton(label = "英", onClick = { speak(word.headWord, 1) })
                                             CompactPronounceButton(label = "美", onClick = { speak(word.headWord, 2) })
+                                            IconButton(
+                                                onClick = {
+                                                    autoSpeak = !autoSpeak
+                                                    UserLibrary.setAutoPlayAudio(autoSpeak)
+                                                },
+                                                modifier = Modifier.size(32.dp),
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Headphones,
+                                                    contentDescription = if (autoSpeak) "关闭自动发音" else "开启自动发音",
+                                                    tint = if (autoSpeak) {
+                                                        MaterialTheme.colorScheme.primary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    },
+                                                    modifier = Modifier.size(18.dp),
+                                                )
+                                            }
                                         }
                                     }
                                     Spacer(Modifier.height(32.dp))
@@ -804,17 +878,14 @@ fun WordDetailScreen(
                         }
                     }
 
-                    // 底部情感化三按钮
-                    // 单词模式：点击翻面查看释义
-                    // 背诵模式：未翻面时点击翻面；已翻面后点击进入下一个单词（或完成）
-                    val onGrade: (grade: Int) -> Unit = { grade ->
-                        // grade: 0=不认识, 1=模糊, 2=认识
-                        // 第一次点击（卡片尚未翻面）：先翻面看释义，不要立刻跳到下一个单词；
-                        // 已翻面后再点击评分才会记录并进入下一个单词。
-                        if (!revealed) {
-                            revealed = true
-                            markLearnedOnce()
-                        } else {
+                    // 只有正式背诵会话才显示评分按钮；词库搜索跳转只是看词条
+                    if (isStudyMode) {
+                        val onGrade: (grade: Int) -> Unit = { grade ->
+                            // grade: 0=不认识, 2=认识。模糊不再作为最终评分，只用于进入翻面判定。
+                            if (!learnedMarked) {
+                                learnedMarked = true
+                                markLearnedOnce()
+                            }
                             if (grade == 0) markWrong()
                             if (grade == 2) {
                                 markKnown()
@@ -826,61 +897,69 @@ fun WordDetailScreen(
                                     ReviewScheduler.record(dbName, currentWordId, grade)
                                 }
                             }
-                            if (isStudyMode) {
-                                if (currentIndex < total - 1) {
-                                    currentIndex++
-                                } else {
-                                    Toast.makeText(
-                                        context,
-                                        "本轮背诵完成",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    onBack()
-                                }
+                            if (currentIndex < total - 1) {
+                                currentIndex++
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "本轮背诵完成",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                onBack()
                             }
                         }
-                    }
-                    // 底部悬浮操作栏：液态玻璃底板 + 按钮色彩层级化
-                    LiquidGlassBottomBar(
-                        backdrop = liquidBackdrop,
-                        shape = GlassShapes.Panel,
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        // 底部悬浮操作栏：液态玻璃底板 + 按钮色彩层级化
+                        LiquidGlassBottomBar(
+                            backdrop = liquidBackdrop,
+                            shape = GlassShapes.Panel,
                         ) {
-                            // 不认识：轮廓线按钮，error 色边框/文字（视觉权重最低，表示需复习）
-                            OutlinedButton(
-                                onClick = { onGrade(0) },
-                                modifier = Modifier.weight(1f).height(52.dp),
-                                shape = GlassShapes.Item,
-                                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error,
-                                ),
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp, MaterialTheme.colorScheme.error,
-                                ),
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                Text(
-                                    if (isWrong) "不认识 ✓" else "不认识",
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
-                            }
-                            // 模糊：浅色填充按钮，secondaryContainer（视觉适中）
-                            androidx.compose.material3.FilledTonalButton(
-                                onClick = { onGrade(1) },
-                                modifier = Modifier.weight(1f).height(52.dp),
-                                shape = GlassShapes.Item,
-                            ) {
-                                Text("模糊", style = MaterialTheme.typography.labelLarge)
-                            }
-                            // 认识：实心填充按钮，primary（视觉权重最高，表示完成）
-                            Button(
-                                onClick = { onGrade(2) },
-                                modifier = Modifier.weight(1f).height(52.dp),
-                                shape = GlassShapes.Item,
-                            ) {
-                                Text("认识", style = MaterialTheme.typography.labelLarge)
+                                OutlinedButton(
+                                    onClick = { onGrade(0) },
+                                    modifier = Modifier.weight(1f).height(52.dp),
+                                    shape = GlassShapes.Item,
+                                    colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error,
+                                    ),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp, MaterialTheme.colorScheme.error,
+                                    ),
+                                ) {
+                                    Text(
+                                        if (isWrong) "不认识 ✓" else if (fuzzyPending) "还不认识" else "不认识",
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                }
+                                // 模糊只负责翻面，随后让用户明确判断认识还是不认识
+                                if (!fuzzyPending) {
+                                    androidx.compose.material3.FilledTonalButton(
+                                        onClick = {
+                                            revealed = true
+                                            fuzzyPending = true
+                                            if (!learnedMarked) {
+                                                learnedMarked = true
+                                                markLearnedOnce()
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f).height(52.dp),
+                                        shape = GlassShapes.Item,
+                                    ) {
+                                        Text("模糊", style = MaterialTheme.typography.labelLarge)
+                                    }
+                                }
+                                Button(
+                                    onClick = { onGrade(2) },
+                                    modifier = Modifier.weight(1f).height(52.dp),
+                                    shape = GlassShapes.Item,
+                                ) {
+                                    Text(
+                                        if (fuzzyPending) "认识了" else "认识",
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1255,13 +1334,19 @@ fun WordStudyScreen(
         val ids = if (reviewQueue.isNotEmpty()) {
             reviewQueue
         } else {
-            withContext(Dispatchers.IO) {
-                val db = DatabaseManager.openDatabase(context, dbName)
-                try {
-                    DatabaseManager.getWordList(db).map { it.wordId }
-                } finally {
-                    DatabaseManager.release(db)
+            try {
+                withContext(Dispatchers.IO) {
+                    val db = DatabaseManager.openDatabase(context, dbName)
+                    try {
+                        DatabaseManager.getWordList(db).map { it.wordId }
+                    } finally {
+                        DatabaseManager.release(db)
+                    }
                 }
+            } catch (e: Exception) {
+                // 词库文件缺失或损坏：走失败分支给出可返回的提示，不让异常打断协程
+                loadFailed = true
+                return@LaunchedEffect
             }
         }
         if (ids.isEmpty()) loadFailed = true else wordIds = ids
@@ -1297,14 +1382,24 @@ fun WordStudyScreen(
                 wordQueue = ids,
                 startIndex = startIdx,
                 onNavigateToWord = onNavigateToWord,
+                // 复习队列的下标与整本背诵进度无关，不能写回去
+                trackProgress = reviewQueue.isEmpty(),
             )
         }
         loadFailed -> Box(Modifier.fillMaxSize()) {
-            Text(
-                "词库为空，无法开始背诵",
+            Column(
                 modifier = Modifier.align(Alignment.Center),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "词库为空或加载失败",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = onBack, shape = RoundedCornerShape(14.dp)) {
+                    Text("返回")
+                }
+            }
         }
         else -> DetailSkeleton()
     }

@@ -40,6 +40,8 @@ sealed class AnswerResult {
         val diffInfo: List<CharDiff> = emptyList(),
     ) : AnswerResult()
     data class Wrong(val userAnswer: String, val correct: String, val diffInfo: List<CharDiff> = emptyList()) : AnswerResult()
+    /** 主动跳过；markedWrong 表示同时把当前单词记入错题本 */
+    data class Skipped(val markedWrong: Boolean) : AnswerResult()
 }
 
 data class CharDiff(
@@ -57,6 +59,8 @@ data class QuizUiState(
     val spellingInput: String = "",
     val correctCount: Int = 0,
     val wrongCount: Int = 0,
+    /** 本轮连续答对数，用于即时正反馈；答错或跳过归零 */
+    val streak: Int = 0,
     val isFinished: Boolean = false,
     val selectedOption: String? = null,
     /** null = 随机模式；非 null = 固定模式 */
@@ -74,6 +78,7 @@ sealed class QuizIntent {
     data object SubmitSpelling : QuizIntent()
     data object NextQuestion : QuizIntent()
     data object ReplayAudio : QuizIntent()
+    data class SkipQuestion(val markWrong: Boolean) : QuizIntent()
     data object Restart : QuizIntent()
     data object ReviewWrong : QuizIntent()
 }

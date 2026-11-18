@@ -23,6 +23,8 @@
 *.aab
 *.jks
 *.keystore
+# 签名密钥库（main 无扩展名，需显式忽略，避免推送到远程泄露）
+/signing/
 *.proguard.cfg
 proguard/
 mapping.txt

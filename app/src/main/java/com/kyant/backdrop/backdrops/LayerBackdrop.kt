@@ -4,7 +4,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -48,6 +51,13 @@ class LayerBackdrop internal constructor(
     @Volatile
     internal var backgroundDirty: Boolean = true
 
+    /**
+     * 采样内容版本。用玻璃的节点在绘制阶段读取它，
+     * 重录采样层后版本变化，消费端才会重新采样；否则要等一次交互才刷新。
+     */
+    private var revisionState by mutableIntStateOf(0)
+    override val revision: Int get() = revisionState
+
     // 由 layerBackdrop 节点在 attach 时设置，用于内容变化时请求重绘
     internal var requestRedraw: (() -> Unit)? = null
 
@@ -55,7 +65,13 @@ class LayerBackdrop internal constructor(
 
     internal fun invalidateBackground() {
         backgroundDirty = true
+        revisionState++
         requestRedraw?.invoke()
+    }
+
+    /** 内容已被外部录制（如 exportedBackdrop），只需通知消费端重采样 */
+    internal fun notifyContentChanged() {
+        revisionState++
     }
 
     override fun DrawScope.drawBackdrop(

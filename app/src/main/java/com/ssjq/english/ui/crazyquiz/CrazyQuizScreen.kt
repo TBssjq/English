@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +43,7 @@ import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -73,6 +75,7 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.data.DatabaseManager
+import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.UserManager
 import com.ssjq.english.data.WordDetail
@@ -83,10 +86,37 @@ import com.ssjq.english.ui.nav.CrazyQuizSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** 题源标识不含题量题量另外存 requestedCount，换题量时不会误接旧进度 */
+private fun crazyQuizSourceKey(source: CrazyQuizSource, dbName: String?): String = when (source) {
+    CrazyQuizSource.WRONG -> "crazy|wrong"
+    CrazyQuizSource.FAVORITE -> "crazy|favorite"
+    CrazyQuizSource.LIBRARY -> "crazy|library|${dbName?.removeSuffix(".db").orEmpty()}"
+}
+
+/** 读取同一题源、同一题量上次的题序，退出后按原词序恢复 */
+private fun savedQuizSourceIds(sourceKey: String, count: Int): List<String> {
+    val raw = UserManager.getQuizProgress() ?: return emptyList()
+    val obj = try {
+        org.json.JSONObject(raw)
+    } catch (e: Exception) {
+        return emptyList()
+    }
+    if (obj.optString("dbName") != "crazy_quiz") return emptyList()
+    if (obj.optString("sourceKey") != sourceKey) return emptyList()
+    if (obj.optInt("requestedCount", 0) != count) return emptyList()
+    val array = obj.optJSONArray("sourceIds") ?: return emptyList()
+    return (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
+}
+
 @Composable
 fun CrazyQuizScreen(
     onBack: () -> Unit,
-    onStartQuiz: (dbName: String, sourceWords: List<WordDetail>) -> Unit,
+    onStartQuiz: (
+        dbName: String,
+        sourceWords: List<WordDetail>,
+        sourceKey: String,
+        count: Int,
+    ) -> Unit,
 ) {
     val context = LocalContext.current
     var selectedSource by remember { mutableStateOf<CrazyQuizSource?>(null) }
@@ -108,9 +138,10 @@ fun CrazyQuizScreen(
         val (w, f) = withContext(Dispatchers.IO) {
             val wMap = UserLibrary.wrongCountByDb()
             val fMap = UserLibrary.favoriteCountByDb()
-            // wrongCountByDb/favoriteCountByDb 的 key 是 WordEntry.dbName（含 .db 后缀），
-            // allDbs 的元素同样带后缀，直接查即可；去掉后缀会永远匹配不到
-            allDbs.sumOf { wMap[it] ?: 0 } to allDbs.sumOf { fMap[it] ?: 0 }
+            // 词单里的 dbName 已统一去掉 .db 后缀，allDbs 是带后缀的资产文件名，
+            // 查表前必须对齐，否则永远查不到，错题本会显示「暂无错题」且点不动
+            allDbs.sumOf { wMap[it.removeSuffix(".db")] ?: 0 } to
+                allDbs.sumOf { fMap[it.removeSuffix(".db")] ?: 0 }
         }
         wrongCount = w
         favoriteCount = f
@@ -121,6 +152,9 @@ fun CrazyQuizScreen(
     }
 
     var startQuizTrigger by remember { mutableStateOf<CrazyQuizSource?>(null) }
+    // 每次开始疯狂刷题前都先选题量
+    var showCountDialog by remember { mutableStateOf(false) }
+    var quizCount by remember { mutableStateOf(20) }
     // 全应用共享的背景采样层与玻璃配色
     val liquidBackdrop = LocalAppBackdrop.current
     val glassSurface = LocalGlassPalette.current.surfaceTint
@@ -130,19 +164,31 @@ fun CrazyQuizScreen(
         // 整段搬到 IO 线程：旧实现在主线程循环调用 getWordDetail（每条一次线程
         // 切换 + 一次开库 + 6 张关联表查询），100 条就是 100 次往返，错题本/
         // 收藏夹较大时点击「开始刷题」会明显卡住界面
+        val key = crazyQuizSourceKey(source, selectedDb)
+        val savedIds = savedQuizSourceIds(key, quizCount)
         val words = withContext(Dispatchers.IO) {
             when (source) {
                 CrazyQuizSource.WRONG -> {
-                    UserLibrary.allWrongWords()
-                        .shuffled()
-                        .take(100)
-                        .mapNotNull { loadEntryDetail(context, it) }
+                    val all = UserLibrary.allWrongWords()
+                    val byId = all.associateBy { it.wordId }
+                    if (savedIds.isNotEmpty()) {
+                        savedIds.mapNotNull { byId[it] }.take(quizCount)
+                            .mapNotNull { loadEntryDetail(context, it) }
+                    } else {
+                        all.shuffled().take(quizCount)
+                            .mapNotNull { loadEntryDetail(context, it) }
+                    }
                 }
                 CrazyQuizSource.FAVORITE -> {
-                    UserLibrary.allFavorites()
-                        .shuffled()
-                        .take(100)
-                        .mapNotNull { loadEntryDetail(context, it) }
+                    val all = UserLibrary.allFavorites()
+                    val byId = all.associateBy { it.wordId }
+                    if (savedIds.isNotEmpty()) {
+                        savedIds.mapNotNull { byId[it] }.take(quizCount)
+                            .mapNotNull { loadEntryDetail(context, it) }
+                    } else {
+                        all.shuffled().take(quizCount)
+                            .mapNotNull { loadEntryDetail(context, it) }
+                    }
                 }
                 CrazyQuizSource.LIBRARY -> {
                     val raw = selectedDb ?: return@withContext emptyList<WordDetail>()
@@ -151,10 +197,15 @@ fun CrazyQuizScreen(
                     val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
                     val db = DatabaseManager.openDatabase(context, dbName)
                     try {
-                        DatabaseManager.getWordList(db)
-                            .shuffled()
-                            .take(100)
-                            .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId) }
+                        if (savedIds.isNotEmpty()) {
+                            savedIds.take(quizCount)
+                                .mapNotNull { DatabaseManager.getWordDetail(db, it, dbName) }
+                        } else {
+                            DatabaseManager.getWordList(db)
+                                .shuffled()
+                                .take(quizCount)
+                                .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId, dbName) }
+                        }
                     } finally {
                         DatabaseManager.release(db)
                     }
@@ -162,7 +213,7 @@ fun CrazyQuizScreen(
             }
         }
         if (words.isNotEmpty()) {
-            onStartQuiz("crazy_quiz", words)
+            onStartQuiz("crazy_quiz", words, key, quizCount)
         }
         startQuizTrigger = null
     }
@@ -179,9 +230,15 @@ fun CrazyQuizScreen(
         selectedSource = source
         if (source == CrazyQuizSource.LIBRARY) {
             selectedDb = null
-        } else {
-            startQuizTrigger = source
         }
+        // 题量由用户决定，选定后才真正加载题源
+        showCountDialog = true
+    }
+
+    fun startSelectedQuiz(count: Int) {
+        quizCount = count
+        showCountDialog = false
+        startQuizTrigger = selectedSource
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -207,7 +264,7 @@ fun CrazyQuizScreen(
                 dbs = allDbs,
                 onSelect = { db ->
                     selectedDb = db
-                    startQuizTrigger = CrazyQuizSource.LIBRARY
+                    showCountDialog = true
                 },
                 onBack = { selectedSource = null },
                 modifier = Modifier.fillMaxSize().padding(padding),
@@ -277,7 +334,8 @@ fun CrazyQuizScreen(
                             backdrop = liquidBackdrop,
                             onClick = {
                                 selectedDb = lastStudyDb
-                                startQuizTrigger = CrazyQuizSource.LIBRARY
+                                selectedSource = CrazyQuizSource.LIBRARY
+                                showCountDialog = true
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = GlassShapes.Item,
@@ -478,6 +536,41 @@ fun CrazyQuizScreen(
         }
     }
     }
+
+    if (showCountDialog) {
+        val options = listOf(10, 20, 30, 50, 100)
+        val source = selectedSource
+        val key = if (source != null) crazyQuizSourceKey(source, selectedDb) else ""
+        AlertDialog(
+            onDismissRequest = { showCountDialog = false },
+            title = { Text("刷多少题？") },
+            text = {
+                Column {
+                    Text(
+                        "先选本轮题量，退出后可接着同一题源继续",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    options.forEach { count ->
+                        TextButton(
+                            onClick = { startSelectedQuiz(count) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            val saved = savedQuizSourceIds(key, count)
+                            Text(
+                                if (saved.isEmpty()) "$count 题" else "$count 题 · 可继续上次",
+                                fontWeight = if (saved.isEmpty()) FontWeight.Normal else FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCountDialog = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -513,7 +606,7 @@ private fun SelectDbScreen(
                         modifier = Modifier.size(24.dp),
                     )
                     Spacer(Modifier.width(12.dp))
-                    Text(dbName.removeSuffix(".db"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(LibraryCatalog.displayName(dbName), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

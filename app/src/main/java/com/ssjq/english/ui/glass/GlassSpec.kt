@@ -101,6 +101,13 @@ object GlassQuality {
 
     val blurRadius: Dp get() = if (lowRam) 4.dp else 8.dp
 
+    /**
+     * 按当前表现调整模糊强度：quality > 1 更柔，< 1 更清晰。
+     * 同时尊重特效总开关与低端设备档位，避免表现降级时被特效拖慢。
+     */
+    fun adaptiveBlur(base: Dp, quality: Float = 1f): Dp =
+        base * blurRadiusPxFactor * quality.coerceIn(0.5f, 1.3f)
+
     /** 底栏是细长条，模糊半径减半即可，避免大面积模糊拖慢切换与拖动 */
     val bottomBarBlurRadius: Dp get() = if (lowRam) 2.dp else 4.dp
 

@@ -54,8 +54,11 @@ import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
+import com.ssjq.english.data.QuizRecordSummary
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.glass.GlassQuality
+import com.ssjq.english.ui.glass.GlassShapes
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import kotlin.math.roundToInt
 
@@ -73,16 +76,21 @@ fun ResultScreen(
     onRestart: () -> Unit,
     onReviewWrong: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 本次开始前的最近一次测验记录，用于回顾与对比 */
+    previousRecord: QuizRecordSummary? = null,
 ) {
     val accuracy = if (totalCount > 0) correctCount.toFloat() / totalCount else 0f
     val accuracyPercent = (accuracy * 100).roundToInt()
     val grade = getGrade(accuracy)
     val gradeColor = getGradeColor(grade)
+    // 用具体数字和可执行的下一步替代空泛赞美：
+    // 结果页是一轮体验的「峰终」，用户记住的是这里给出的确定感
     val encouragement = when {
-        accuracy >= 0.9 -> "太棒了！你已经完全掌握！🎉"
-        accuracy >= 0.7 -> "不错！继续保持！💪"
-        accuracy >= 0.5 -> "还可以，再接再厉！📚"
-        else -> "别灰心，多练习就好！🌱"
+        totalCount == 0 -> "这一轮没有题目，换个模式再试试"
+        accuracy >= 0.9 -> "答对 $correctCount / $totalCount，状态很稳！"
+        accuracy >= 0.7 -> "答对 $correctCount / $totalCount，保持这个节奏"
+        accuracy >= 0.5 -> "答对 $correctCount / $totalCount，错题已收进错题本"
+        else -> "答对 $correctCount / $totalCount，再练一轮就熟了"
     }
 
     // 全应用共享的背景采样层
@@ -101,7 +109,7 @@ fun ResultScreen(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "测验完成！",
+            if (totalCount > 0 && accuracy >= 0.9) "这一轮很稳！" else "测验完成！",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
         )
@@ -110,6 +118,41 @@ fun ResultScreen(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (previousRecord != null) {
+            Spacer(Modifier.height(16.dp))
+            LiquidGlassCard(
+                backdrop = liquidBackdrop,
+                modifier = Modifier.fillMaxWidth(),
+                shape = GlassShapes.Item,
+                blurRadius = GlassQuality.adaptiveBlur(6.dp, 0.85f),
+                surfaceColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(
+                        "上次测验",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${previousRecord.correct} / ${previousRecord.total} 题 · 正确率 ${previousRecord.accuracy}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    val diff = accuracyPercent - previousRecord.accuracy
+                    Text(
+                        // 退步时给可执行的下一步，避免用「下降」做终结性评价
+                        if (diff >= 0) "本次提升 $diff%" else "比上次少 ${-diff}%，再来一轮就追上了",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (diff >= 0) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(32.dp))
 
         // 环形进度（用 Canvas 绘制太复杂，用两个圆叠加模拟）

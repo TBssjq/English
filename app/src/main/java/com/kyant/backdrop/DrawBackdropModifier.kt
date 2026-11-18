@@ -322,7 +322,23 @@ private class DrawBackdropNode(
         }
     }
 
+    /** 上一次采样到的版本号，用于判断采样源是否已重录 */
+    private var lastRevision = -1
+
+    /** 读取采样版本建立快照依赖；变化时标记需要重新采样 */
+    private fun observeBackdropRevision() {
+        val current = backdrop.revision
+        if (current != lastRevision) {
+            lastRevision = current
+            backdropDirty = true
+        }
+    }
+
     override fun ContentDrawScope.draw() {
+        // 采样层重录后（换主题、背景尺寸变化）版本号会变，这里建立观察依赖，
+        // 变化时自动重绘并重新采样，不再等下一次点击。
+        // 组合采样同样透传版本号，开关这类多层叠加的玻璃也能实时刷新。
+        observeReads { observeBackdropRevision() }
         if (effectsDirty) {
             observeEffects()
             effectsDirty = false
@@ -345,13 +361,17 @@ private class DrawBackdropNode(
         onDrawFront?.invoke(this)
 
         if (needsRecord) {
-            exportedBackdrop?.graphicsLayer?.let { layer ->
-                recordLayer(layer) {
-                    onDrawBehind?.invoke(this)
-                    drawBackdropLayer()
-                    onDrawSurface?.invoke(this)
-                    onDrawFront?.invoke(this)
+            exportedBackdrop?.let { exported ->
+                exported.graphicsLayer?.let { layer ->
+                    recordLayer(layer) {
+                        onDrawBehind?.invoke(this)
+                        drawBackdropLayer()
+                        onDrawSurface?.invoke(this)
+                        onDrawFront?.invoke(this)
+                    }
                 }
+                // 导出层内容已更新，消费它的玻璃需要重新采样
+                exported.notifyContentChanged()
             }
             backdropDirty = false
         }
@@ -372,6 +392,8 @@ private class DrawBackdropNode(
 
     override fun onObservedReadsChanged() {
         effectsDirty = true
+        // 采样层版本变化同样需要重新采样
+        backdropDirty = true
         invalidateDraw()
     }
 

@@ -58,23 +58,80 @@ fun LiquidBottomTabs(
         if (palette.isDark) Color(0xFF121212).copy(0.4f)
         else Color(0xFFFAFAFA).copy(0.4f)
 
+    val density = LocalDensity.current
+    // 指示器左右各留 4dp，拖动换算与它保持一致
+    val sideInset = with(density) { 8f.dp.toPx() }
+
+    val animationScope = rememberCoroutineScope()
+    val offsetAnimation = remember { Animatable(0f) }
+    // 拖动位移收敛到常驻协程，避免每个触摸移动事件创建协程
+    val offsetChannel = remember { Channel<Float>(Channel.CONFLATED) }
+    LaunchedEffect(offsetAnimation) {
+        offsetChannel.consumeAsFlow().collectLatest { target ->
+            offsetAnimation.snapTo(target)
+        }
+    }
+
+    val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
+    var currentIndex by remember(selectedTabIndex) {
+        mutableIntStateOf(selectedTabIndex())
+    }
+
+    // 手势挂在整条底栏上：标签文字要绘制在指示器之上，若把手势留在指示器上，
+    // 上层文字会挡住拖动。父层先处理 Main pass，标签自身的点击仍能正常触发。
+    val dampedDragAnimation = remember(animationScope, isLtr, tabsCount) {
+        DampedDragAnimation(
+            animationScope = animationScope,
+            initialValue = selectedTabIndex().toFloat(),
+            valueRange = 0f..(tabsCount - 1).toFloat(),
+            visibilityThreshold = 0.001f,
+            initialScale = 1f,
+            pressedScale = 78f / 56f,
+            onDragStarted = {},
+            onDragStopped = {
+                val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
+                // 松手吸附始终需要一段可见过渡；拖回原页签时下标不变，也要回弹
+                animateToTab(targetIndex.toFloat())
+                if (currentIndex != targetIndex) currentIndex = targetIndex
+                animationScope.launch {
+                    offsetAnimation.animateTo(
+                        0f,
+                        spring(1f, 300f, 0.5f)
+                    )
+                }
+            },
+            onDrag = { size, dragAmount ->
+                val tab = ((size.width.toFloat() - sideInset) / tabsCount).coerceAtLeast(1f)
+                updateValue(
+                    (targetValue + dragAmount.x / tab * if (isLtr) 1f else -1f)
+                        .fastCoerceIn(0f, (tabsCount - 1).toFloat())
+                )
+                offsetChannel.trySend(offsetAnimation.value + dragAmount.x)
+            }
+        )
+    }
+
+    LaunchedEffect(selectedTabIndex) {
+        snapshotFlow { selectedTabIndex() }
+            .collectLatest { index ->
+                if (index != currentIndex) {
+                    // 点击标签：页面切换与指示器动画在同一帧启动
+                    dampedDragAnimation.animateToTab(index.toFloat())
+                    currentIndex = index
+                }
+            }
+    }
+    LaunchedEffect(dampedDragAnimation) {
+        snapshotFlow { currentIndex }
+            .drop(1)
+            .collectLatest { index -> onTabSelected(index) }
+    }
+
     BoxWithConstraints(
-        modifier,
+        modifier.then(dampedDragAnimation.modifier),
         contentAlignment = Alignment.CenterStart
     ) {
-        val density = LocalDensity.current
-        val tabWidth = with(density) {
-            (constraints.maxWidth.toFloat() - 8f.dp.toPx()) / tabsCount
-        }
-
-        val offsetAnimation = remember { Animatable(0f) }
-        // 拖动位移收敛到常驻协程，避免每个触摸移动事件创建协程
-        val offsetChannel = remember { Channel<Float>(Channel.CONFLATED) }
-        LaunchedEffect(offsetAnimation) {
-            offsetChannel.consumeAsFlow().collectLatest { target ->
-                offsetAnimation.snapTo(target)
-            }
-        }
+        val tabWidth = (constraints.maxWidth.toFloat() - sideInset) / tabsCount
         val panelOffset by remember(density) {
             derivedStateOf {
                 val fraction = (offsetAnimation.value / constraints.maxWidth).fastCoerceIn(-1f, 1f)
@@ -84,60 +141,7 @@ fun LiquidBottomTabs(
             }
         }
 
-        val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
-        val animationScope = rememberCoroutineScope()
-        var currentIndex by remember(selectedTabIndex) {
-            mutableIntStateOf(selectedTabIndex())
-        }
-        val dampedDragAnimation = remember(animationScope) {
-            DampedDragAnimation(
-                animationScope = animationScope,
-                initialValue = selectedTabIndex().toFloat(),
-                valueRange = 0f..(tabsCount - 1).toFloat(),
-                visibilityThreshold = 0.001f,
-                initialScale = 1f,
-                pressedScale = 78f / 56f,
-                onDragStarted = {},
-                onDragStopped = {
-                    val targetIndex = targetValue.fastRoundToInt().fastCoerceIn(0, tabsCount - 1)
-                    // 松手吸附始终需要一段可见过渡；拖回原页签时下标不变，也要回弹
-                    animateToTab(targetIndex.toFloat())
-                    if (currentIndex != targetIndex) currentIndex = targetIndex
-                    animationScope.launch {
-                        offsetAnimation.animateTo(
-                            0f,
-                            spring(1f, 300f, 0.5f)
-                        )
-                    }
-                },
-                onDrag = { _, dragAmount ->
-                    updateValue(
-                        (targetValue + dragAmount.x / tabWidth * if (isLtr) 1f else -1f)
-                            .fastCoerceIn(0f, (tabsCount - 1).toFloat())
-                    )
-                    offsetChannel.trySend(offsetAnimation.value + dragAmount.x)
-                }
-            )
-        }
-        LaunchedEffect(selectedTabIndex) {
-            snapshotFlow { selectedTabIndex() }
-                .collectLatest { index ->
-                    if (index != currentIndex) {
-                        // 点击标签：页面切换与指示器动画在同一帧启动，
-                        // 不再等页面重组后绕一圈才动
-                        dampedDragAnimation.animateToTab(index.toFloat())
-                        currentIndex = index
-                    }
-                }
-        }
-        LaunchedEffect(dampedDragAnimation) {
-            snapshotFlow { currentIndex }
-                .drop(1)
-                .collectLatest { index -> onTabSelected(index) }
-        }
-
-        // 整条胶囊玻璃：底栏唯一一次模糊。标签直接绘制在这一层，
-        // 不再额外维护一层透明采样源，省掉一次全宽模糊与一次折射。
+        // 1) 整条胶囊玻璃：底栏唯一一次模糊
         Row(
             Modifier
                 .graphicsLayer {
@@ -163,12 +167,10 @@ fun LiquidBottomTabs(
                 .height(64f.dp)
                 .fillMaxWidth()
                 .padding(4f.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            content = content
+            content = {}
         )
 
-        // 滑块指示器：直接采样应用背景，只做折射不做模糊，
-        // 高光与内阴影使用静态 lambda，按压反馈由缩放与表面色承担。
+        // 2) 滑块指示器：直接采样应用背景，只做轻模糊
         Box(
             Modifier
                 .padding(horizontal = 4f.dp)
@@ -177,12 +179,10 @@ fun LiquidBottomTabs(
                         if (isLtr) dampedDragAnimation.value * tabWidth + panelOffset
                         else size.width - (dampedDragAnimation.value + 1f) * tabWidth + panelOffset
                 }
-                .then(dampedDragAnimation.modifier)
                 .drawBackdrop(
                     backdrop = backdrop,
                     shape = GlassShapes.PillBlock,
                     effects = {
-                        // 指示器随手指每帧移动，折射需要逐像素扭曲，改为轻模糊
                         blur(2f.dp.toPx() * GlassQuality.blurRadiusPxFactor)
                     },
                     highlight = {
@@ -211,6 +211,16 @@ fun LiquidBottomTabs(
                 )
                 .height(56f.dp)
                 .fillMaxWidth(1f / tabsCount)
+        )
+
+        // 3) 标签文字画在最上层，否则会被指示器整块盖住
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(64f.dp)
+                .padding(4f.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = content
         )
     }
 }

@@ -103,6 +103,7 @@ import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.R
 import com.ssjq.english.data.DatabaseManager
+import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.WordListItem
 import com.ssjq.english.ui.common.FancyToast
 import com.ssjq.english.ui.common.ImportExportDialog
@@ -223,7 +224,7 @@ fun WordListScreen(
             LargeTopAppBar(
                 modifier = Modifier.glassTopBar(liquidBackdrop),
                 colors = glassTopBarColors(),
-                title = { Text(dbName.removeSuffix(".db"), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text(LibraryCatalog.displayName(dbName), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
@@ -342,9 +343,11 @@ fun WordListScreen(
                             modifier = Modifier.size(24.dp),
                         )
                         Spacer(Modifier.width(10.dp))
-                        val progressed = studyTotal > 0 && studyIndex in 1 until studyTotal
+                        // 与恢复规则对齐：背到最后一词时详情页会从头开始，
+                        // 这里也显示「开始背诵」，避免出现「继续背诵 99/100」却从第 1 个起
+                        val canContinue = studyTotal > 1 && studyIndex in 1 until (studyTotal - 1)
                         Text(
-                            if (progressed) "继续背诵 ($studyIndex/$studyTotal)" else "开始背诵",
+                            if (canContinue) "继续背诵 ($studyIndex/$studyTotal)" else "开始背诵",
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             fontWeight = FontWeight.Bold,
                             style = MaterialTheme.typography.labelLarge,

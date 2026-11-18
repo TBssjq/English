@@ -72,20 +72,20 @@ object ReviewScheduler {
         val list = ArrayList<ReviewState>(arr.length())
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val dbName = canonicalDb(o.getString("dbName"))
-            val wordId = o.getString("wordId")
-            require(wordId.isNotBlank() && dbName.isNotBlank()) {
-                "复习记录缺少主键: 第 $i 条"
-            }
+            val dbName = canonicalDb(o.optString("dbName"))
+            val wordId = o.optString("wordId")
+            val next = o.optString("nextReviewDate")
+            // 主键或到期日缺失的记录跳过：空到期日会被判成「永远到期」
+            if (wordId.isBlank() || dbName.isBlank() || next.isBlank()) continue
             list.add(
                 ReviewState(
                     dbName = dbName,
                     wordId = wordId,
-                    level = o.getInt("level"),
-                    nextReviewDate = o.getString("nextReviewDate"),
+                    level = o.optInt("level", 0),
+                    nextReviewDate = next,
                     lastReviewedDate = o.optString("lastReviewedDate").takeIf { it.isNotBlank() },
-                    totalReviews = o.getInt("totalReviews"),
-                    correctReviews = o.getInt("correctReviews"),
+                    totalReviews = o.optInt("totalReviews", 0),
+                    correctReviews = o.optInt("correctReviews", 0),
                 )
             )
         }

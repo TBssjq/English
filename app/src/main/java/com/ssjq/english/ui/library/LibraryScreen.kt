@@ -36,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +69,7 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.R
+import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassListItem
@@ -85,7 +87,10 @@ fun LibraryScreen(
     dbName: String,
     type: LibraryType,
     onBack: () -> Unit,
-    onWordClick: (String) -> Unit,
+    /** 必须带词库名：全部词库视图下条目来自不同词库，只传 wordId 会打开错词 */
+    onWordClick: (dbName: String, wordId: String) -> Unit,
+    /** 进入时是否直接看全部词库；从主页入口进来时为 true */
+    initialShowAll: Boolean = false,
 ) {
     val title = when (type) {
         LibraryType.WRONG -> "错题本"
@@ -95,14 +100,16 @@ fun LibraryScreen(
     // key 必须带上 dbName/type：旧实现无 key，切换词库或切换类型时不会重新
     // 加载，界面上显示的仍是上一份数据
     // 先给空列表，避免组合期同步解析错题/收藏 JSON 阻塞主线程
-    var entries by remember(dbName, type) { mutableStateOf<List<WordEntry>>(emptyList()) }
+    // 跨词库测验的错题分散在多本词库里，默认只看当前词库，可切换为全部
+    var showAllDbs by remember { mutableStateOf(initialShowAll) }
+    var entries by remember(dbName, type, showAllDbs) { mutableStateOf<List<WordEntry>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
     suspend fun reloadEntries() {
-        val data = withContext(Dispatchers.IO) { loadEntries(dbName, type) }
+        val data = withContext(Dispatchers.IO) { loadEntries(dbName, type, showAllDbs) }
         entries = data
     }
-    LaunchedEffect(dbName, type) { reloadEntries() }
+    LaunchedEffect(dbName, type, showAllDbs) { reloadEntries() }
 
     fun refresh() { scope.launch { reloadEntries() } }
 
@@ -124,6 +131,14 @@ fun LibraryScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                     }
                 },
+                actions = {
+                    TextButton(onClick = { showAllDbs = !showAllDbs }) {
+                        Text(
+                            if (showAllDbs) "全部词库" else "本词库",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                },
                 scrollBehavior = scrollBehavior,
             )
         }
@@ -131,9 +146,11 @@ fun LibraryScreen(
         if (entries.isEmpty()) {
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 Text(
-                    when (type) {
-                        LibraryType.WRONG -> "暂无错题，背诵时点击「不认识」会自动加入"
-                        LibraryType.FAVORITE -> "暂无收藏，点击单词详情页顶栏的星标即可加入"
+                    when {
+                        showAllDbs && type == LibraryType.WRONG -> "所有词库都还没有错题"
+                        showAllDbs -> "所有词库都还没有收藏"
+                        type == LibraryType.WRONG -> "当前词库暂无错题，点右上角切换为「全部词库」"
+                        else -> "当前词库暂无收藏，点右上角切换为「全部词库」"
                     },
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
                     style = MaterialTheme.typography.bodyMedium,
@@ -151,13 +168,14 @@ fun LibraryScreen(
                         entry = entry,
                         type = type,
                         backdrop = liquidBackdrop,
-                        onClick = { onWordClick(entry.wordId) },
+                        onClick = { onWordClick(entry.dbName, entry.wordId) },
                         onDelete = {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
+                                    // 全部词库视图下必须按条目自身所属词库删除
                                     when (type) {
-                                        LibraryType.WRONG -> UserLibrary.removeWrong(dbName, entry.wordId)
-                                        LibraryType.FAVORITE -> UserLibrary.removeFavorite(dbName, entry.wordId)
+                                        LibraryType.WRONG -> UserLibrary.removeWrong(entry.dbName, entry.wordId)
+                                        LibraryType.FAVORITE -> UserLibrary.removeFavorite(entry.dbName, entry.wordId)
                                     }
                                 }
                                 reloadEntries()
@@ -171,9 +189,9 @@ fun LibraryScreen(
     }
 }
 
-private fun loadEntries(dbName: String, type: LibraryType): List<WordEntry> = when (type) {
-    LibraryType.WRONG -> UserLibrary.wrongWords(dbName)
-    LibraryType.FAVORITE -> UserLibrary.favorites(dbName)
+private fun loadEntries(dbName: String, type: LibraryType, allDbs: Boolean): List<WordEntry> = when (type) {
+    LibraryType.WRONG -> if (allDbs) UserLibrary.allWrongWords() else UserLibrary.wrongWords(dbName)
+    LibraryType.FAVORITE -> if (allDbs) UserLibrary.allFavorites() else UserLibrary.favorites(dbName)
 }
 
 @Composable
@@ -215,6 +233,15 @@ private fun LibraryRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                // 全部词库视图里条目来自不同词库，标出中文词库名才看得出来源
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    LibraryCatalog.displayName(entry.dbName),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             },
             trailingContent = {
                 Row(verticalAlignment = Alignment.CenterVertically) {

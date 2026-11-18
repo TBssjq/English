@@ -118,10 +118,11 @@ object CheckInManager {
         ensureInit()
         val raw = prefs.getString(KEY_RECORDS, null) ?: return emptyList()
         val arr = JSONArray(raw)
-        return (0 until arr.length()).map { i ->
+        // 缺日期的条目直接跳过：一条坏数据不该让整份打卡记录不可用
+        return (0 until arr.length()).mapNotNull { i ->
             val o = arr.getJSONObject(i)
-            val date = o.getString("date")
-            require(date.isNotBlank()) { "打卡记录缺少日期: 第 $i 条" }
+            val date = o.optString("date")
+            if (date.isBlank()) return@mapNotNull null
             CheckInRecord(
                 date = date,
                 studyMinutes = o.optInt("studyMinutes", 0),

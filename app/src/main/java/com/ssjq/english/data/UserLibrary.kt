@@ -172,6 +172,13 @@ object UserLibrary {
 
     fun wrongCount(dbName: String): Int = wrongWords(dbName).size
 
+    /**
+     * 全部词库的错题，按加入时间倒序。跨词库测验的错题靠它才能看到。
+     * 一次性读完整份 JSON，避免调用方按词库循环读取时反复反序列化。
+     */
+    fun allWrongWords(): List<WordEntry> =
+        readList(KEY_WRONG).sortedByDescending { it.addedAt }
+
     // ---------- 收藏夹 ----------
 
     @Synchronized
@@ -203,18 +210,11 @@ object UserLibrary {
 
     fun favoriteCount(dbName: String): Int = favorites(dbName).size
 
+    /** 全部词库的收藏，按加入时间倒序 */
+    fun allFavorites(): List<WordEntry> =
+        readList(KEY_FAVORITE).sortedByDescending { it.addedAt }
+
     // ---------- 批量读取（性能） ----------
-
-    /**
-     * 一次性读取全部错题。
-     *
-     * 提供批量接口是为了避免调用方按词库循环读取 —— 那会对同一份 JSON
-     * 反复反序列化（N 个词库 = N 次全量解析），几十个词库时主线程明显卡顿。
-     */
-    fun allWrongWords(): List<WordEntry> = readList(KEY_WRONG)
-
-    /** 一次性读取全部收藏 */
-    fun allFavorites(): List<WordEntry> = readList(KEY_FAVORITE)
 
     /** 各词库的错题数（只解析一次 JSON 得出全部结果） */
     fun wrongCountByDb(): Map<String, Int> =
@@ -240,18 +240,18 @@ object UserLibrary {
         val list = ArrayList<WordEntry>(arr.length())
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val wordId = o.getString("wordId")
-            val dbName = canonicalDb(o.getString("dbName"))
-            require(wordId.isNotBlank() && dbName.isNotBlank()) {
-                "词单记录缺少主键: $key 第 $i 条"
-            }
+            val wordId = o.optString("wordId")
+            val dbName = canonicalDb(o.optString("dbName"))
+            // 缺主键的条目跳过：其余记录仍要能正常读出
+            if (wordId.isBlank() || dbName.isBlank()) continue
             list.add(
                 WordEntry(
                     wordId = wordId,
-                    headWord = o.getString("headWord"),
+                    // 早期记录可能没有词头与时间，缺失时退化为空串与 0，不影响按 wordId 打开
+                    headWord = o.optString("headWord"),
                     dbName = dbName,
                     tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
-                    addedAt = o.getLong("addedAt"),
+                    addedAt = o.optLong("addedAt", 0L),
                 )
             )
         }

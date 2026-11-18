@@ -19,6 +19,8 @@ object UserManager {
     private const val KEY_ANNOUNCEMENT_SEEN = "announcement_seen_key"
 
     private const val KEY_QUIZ_RECORDS = "quiz_records"
+    private const val KEY_QUIZ_PROGRESS = "quiz_progress"
+    private const val KEY_LAST_VERSION_CODE = "last_version_code"
     private const val KEY_DAILY_GOAL = "daily_goal"
 
     /** 每日学习目标可选项（单词数） */
@@ -113,6 +115,17 @@ object UserManager {
         _glassEffectFlow.value = enabled
     }
 
+    /**
+     * 记录当前运行的版本号，返回 true 表示这是升级后的第一次启动。
+     * 调用方据此刷新由 assets 派生、但不受版本约束的缓存。
+     */
+    fun markVersionChecked(versionCode: Long): Boolean {
+        val last = prefs.getLong(KEY_LAST_VERSION_CODE, 0L)
+        if (last == versionCode) return false
+        prefs.edit { putLong(KEY_LAST_VERSION_CODE, versionCode) }
+        return true
+    }
+
     /** 每日学习目标（单词数），默认 20 */
     fun getDailyGoal(): Int {
         val goal = prefs.getInt(KEY_DAILY_GOAL, DEFAULT_DAILY_GOAL)
@@ -169,4 +182,37 @@ object UserManager {
         org.json.JSONArray(raw)
         return raw
     }
+
+    /** 保存测验断点；同参数下次进入时用它重建同一套题并回到原题号 */
+    fun saveQuizProgress(json: String) {
+        prefs.edit { putString(KEY_QUIZ_PROGRESS, json) }
+    }
+
+    fun getQuizProgress(): String? = prefs.getString(KEY_QUIZ_PROGRESS, null)
+
+    fun clearQuizProgress() {
+        prefs.edit { remove(KEY_QUIZ_PROGRESS) }
+    }
+
+    /** 最近一次测验记录，用于结果页回顾与对比 */
+    fun getLastQuizRecord(): QuizRecordSummary? {
+        val raw = prefs.getString(KEY_QUIZ_RECORDS, null) ?: return null
+        val arr = org.json.JSONArray(raw)
+        if (arr.length() == 0) return null
+        val o = arr.getJSONObject(arr.length() - 1)
+        return QuizRecordSummary(
+            timestamp = o.optLong("timestamp", 0L),
+            accuracy = o.optInt("accuracy", 0),
+            total = o.optInt("totalQuestions", 0),
+            correct = o.optInt("correctCount", 0),
+        )
+    }
 }
+
+/** 测验记录摘要，避免界面层直接解析 JSON */
+data class QuizRecordSummary(
+    val timestamp: Long,
+    val accuracy: Int,
+    val total: Int,
+    val correct: Int,
+)

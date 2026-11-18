@@ -29,8 +29,8 @@ android {
         applicationId = "com.ssjq.english"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "2.2"
+        versionCode = 5
+        versionName = "2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -67,6 +67,12 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+
+    // 依赖库带了大量语言资源；应用界面只用中文和英文，
+    // 合并资源时过滤掉其他语言，避免随 APK 一起打包
+    androidResources {
+        localeFilters += listOf("en", "zh")
     }
 }
 

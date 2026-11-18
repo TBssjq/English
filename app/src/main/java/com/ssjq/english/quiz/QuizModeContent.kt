@@ -465,6 +465,10 @@ private fun OptionsList(
                         else -> OptionState.Idle
                     }
                 }
+                is AnswerResult.Skipped -> {
+                    // 跳过后直接标出正确答案，让这道题仍有学习价值
+                    if (option == correctAnswer) OptionState.Correct else OptionState.Idle
+                }
             }
             OptionButton(
                 text = option,
