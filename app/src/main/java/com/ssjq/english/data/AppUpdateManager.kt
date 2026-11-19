@@ -83,7 +83,7 @@ object AppUpdateManager {
     private const val NOTICE_URL =
         "https://TBssjq.github.io/version/english.log.json"
 
-    /** 服务端未给 downloadUrl 时使用的默认下载地址，指向 Gitee 最新 Release */
+    /** 服务端未给 downloadUrl 时使用的默认下载地址，指向 Gitee 最新发布页 */
     private const val DEFAULT_DOWNLOAD_URL =
         "https://gitee.com/ssjq/English/releases/latest"
 
