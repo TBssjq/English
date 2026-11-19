@@ -83,6 +83,10 @@ object AppUpdateManager {
     private const val NOTICE_URL =
         "https://TBssjq.github.io/version/english.log.json"
 
+    /** 服务端未给 downloadUrl 时使用的默认下载地址，指向 Gitee 最新 Release */
+    private const val DEFAULT_DOWNLOAD_URL =
+        "https://gitee.com/ssjq/English/releases/latest"
+
     private val okHttp: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -129,7 +133,14 @@ object AppUpdateManager {
     /** 发起 GET 请求，失败/非 2xx 统一返回 null */
     private fun get(url: String): String? {
         return try {
-            val request = Request.Builder().url(url).get().build()
+            // Pages/CDN 可能缓存旧的 forceUpdate=true，带随机参数并禁用缓存，
+            // 确保用户拿到的是当前发布的配置
+            val separator = if ("?" in url) "&" else "?"
+            val request = Request.Builder()
+                .url("$url${separator}_=${System.currentTimeMillis()}")
+                .header("Cache-Control", "no-cache")
+                .get()
+                .build()
             okHttp.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return null
                 response.body?.string()
@@ -199,7 +210,7 @@ object AppUpdateManager {
         if (latestVersion.isBlank()) return null
         return AppVersion(
             latestVersion = latestVersion,
-            downloadUrl = root.string("downloadUrl"),
+            downloadUrl = root.string("downloadUrl").ifBlank { DEFAULT_DOWNLOAD_URL },
             changelog = root.string("changelog").ifBlank { "新版本已发布，立即体验！" },
             forceUpdate = root.bool("forceUpdate"),
         )

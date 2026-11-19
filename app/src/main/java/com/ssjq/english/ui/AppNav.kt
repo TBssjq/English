@@ -238,9 +238,7 @@ fun AppNav() {
             Toast.makeText(context, "下载地址无效，请稍后重试", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!(v.forceUpdate)) {
-            showUpdateDialog = false
-        }
+        showUpdateDialog = false
     }
 
     fun openNoticeUrl() {
@@ -249,9 +247,7 @@ fun AppNav() {
             Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
             return
         }
-        if (!n.isForce) {
-            showNoticeDialog = false
-        }
+        showNoticeDialog = false
     }
 
     BackHandler(enabled = backStack.size > 1) { back() }
@@ -507,9 +503,7 @@ fun AppNav() {
             val v = latestVersion!!
             LiquidGlassDialog(
                 backdrop = appBackdrop,
-                onDismissRequest = {
-                    if (!v.forceUpdate) showUpdateDialog = false
-                },
+                onDismissRequest = { showUpdateDialog = false },
             ) {
                 Text(
                     "发现新版本 v${v.latestVersion}",
@@ -520,12 +514,10 @@ fun AppNav() {
                 GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
                 Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    if (!v.forceUpdate) {
-                        TextButton(onClick = { showUpdateDialog = false }) {
-                            Text("稍后再说")
-                        }
-                        Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { showUpdateDialog = false }) {
+                        Text("稍后再说")
                     }
+                    Spacer(Modifier.width(8.dp))
                     TextButton(onClick = { openDownload() }) {
                         Text("立即下载")
                     }
@@ -538,9 +530,7 @@ fun AppNav() {
             val n = latestNotice!!
             LiquidGlassDialog(
                 backdrop = appBackdrop,
-                onDismissRequest = {
-                    if (!n.isForce) showNoticeDialog = false
-                },
+                onDismissRequest = { showNoticeDialog = false },
             ) {
                 Text(
                     n.title,
@@ -551,12 +541,10 @@ fun AppNav() {
                 GlassDialogBody(n.content)
                 Spacer(Modifier.height(20.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    if (!n.isForce) {
-                        TextButton(onClick = { showNoticeDialog = false }) {
-                            Text("知道了")
-                        }
-                        Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { showNoticeDialog = false }) {
+                        Text("知道了")
                     }
+                    Spacer(Modifier.width(8.dp))
                     if (n.url.isNotBlank()) {
                         TextButton(onClick = { openNoticeUrl() }) {
                             Text(n.btnText.ifBlank { "查看详情" })

@@ -539,9 +539,7 @@ fun AboutScreen(onBack: () -> Unit) {
         val v = latestVersion!!
         LiquidGlassDialog(
             backdrop = liquidBackdrop,
-            onDismissRequest = {
-                if (!v.forceUpdate) showUpdateDialog = false
-            },
+            onDismissRequest = { showUpdateDialog = false },
         ) {
             Text(
                 "发现新版本 v${v.latestVersion}",
@@ -555,12 +553,10 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                if (!v.forceUpdate) {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("稍后再说")
-                    }
-                    Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { showUpdateDialog = false }) {
+                    Text("稍后再说")
                 }
+                Spacer(Modifier.width(8.dp))
                 TextButton(onClick = { handleUpdateClick() }) {
                     Text("立即更新")
                 }
