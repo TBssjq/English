@@ -7,14 +7,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.shadow.InnerShadow
+import com.kyant.backdrop.shadow.Shadow
 
 /** 玻璃表面统一配色。明暗取自 MaterialTheme 的实际配色，跟随用户三态主题设置。 */
 @Immutable
@@ -82,8 +92,7 @@ fun currentGlassPalette(): GlassPalette =
  */
 object GlassQuality {
 
-    @Volatile
-    private var lowRam = false
+    private var lowRam by mutableStateOf(false)
 
     private var effectsOn by mutableStateOf(true)
 
@@ -99,7 +108,12 @@ object GlassQuality {
 
     val vibrancyEnabled: Boolean get() = effectsOn && !lowRam
 
-    val blurRadius: Dp get() = if (lowRam) 4.dp else 8.dp
+    val chromaticAberrationEnabled: Boolean get() = effectsOn && !lowRam
+
+    /** 关闭特效或低端设备时移除高光、外阴影、内阴影这三类额外 GraphicsLayer */
+    val decorationsEnabled: Boolean get() = effectsOn && !lowRam
+
+    val blurRadius: Dp get() = 8.dp
 
     /**
      * 按当前表现调整模糊强度：quality > 1 更柔，< 1 更清晰。
@@ -109,10 +123,73 @@ object GlassQuality {
         base * blurRadiusPxFactor * quality.coerceIn(0.5f, 1.3f)
 
     /** 底栏是细长条，模糊半径减半即可，避免大面积模糊拖慢切换与拖动 */
-    val bottomBarBlurRadius: Dp get() = if (lowRam) 2.dp else 4.dp
+    val bottomBarBlurRadius: Dp get() = 4.dp
 
     /** 关闭特效后只保留较弱模糊，玻璃上的文字仍然可读 */
     val blurRadiusPxFactor: Float get() = if (effectsOn && !lowRam) 1f else 0.5f
+}
+
+/**
+ * 构造稳定的玻璃 modifier。backdrop 库按 lambda 引用判断节点是否变化，
+ * 每次重组新建 effects / highlight / shadow 都会重新录制背景采样。
+ * 这里把整条 modifier 链缓存起来，并在低端档位移除装饰层、色散与深度折射。
+ */
+@Composable
+fun rememberGlassSurfaceModifier(
+    backdrop: Backdrop,
+    shape: Shape,
+    blurRadius: Dp,
+    lensHeight: Dp,
+    lensAmount: Dp,
+    surfaceColor: Color,
+    overlayColor: Color = Color.Unspecified,
+    highlight: Highlight?,
+    shadow: Shadow?,
+    innerShadow: InnerShadow?,
+    enableLens: Boolean = true,
+    enableVibrancy: Boolean = true,
+    enableChromaticAberration: Boolean = true,
+): Modifier {
+    val decorations = GlassQuality.decorationsEnabled
+    return remember(
+        backdrop, shape, blurRadius, lensHeight, lensAmount, surfaceColor, overlayColor,
+        highlight, shadow, innerShadow, enableLens, enableVibrancy,
+        enableChromaticAberration, decorations,
+    ) {
+        val shapeBlock: () -> Shape = { shape }
+        val highlightBlock: (() -> Highlight?)? =
+            if (decorations && highlight != null) { { highlight } } else null
+        val shadowBlock: (() -> Shadow?)? =
+            if (decorations && shadow != null) { { shadow } } else null
+        val innerShadowBlock: (() -> InnerShadow?)? =
+            if (decorations && innerShadow != null) { { innerShadow } } else null
+        Modifier.drawBackdrop(
+            backdrop = backdrop,
+            shape = shapeBlock,
+            effects = {
+                if (enableVibrancy && GlassQuality.vibrancyEnabled) {
+                    colorControls(saturation = 1.6f)
+                }
+                blur(blurRadius.toPx() * GlassQuality.blurRadiusPxFactor)
+                if (enableLens && GlassQuality.lensEnabled) {
+                    lens(
+                        refractionHeight = lensHeight.toPx(),
+                        refractionAmount = lensAmount.toPx(),
+                        depthEffect = false,
+                        chromaticAberration =
+                            enableChromaticAberration && GlassQuality.chromaticAberrationEnabled,
+                    )
+                }
+            },
+            highlight = highlightBlock,
+            shadow = shadowBlock,
+            innerShadow = innerShadowBlock,
+            onDrawSurface = {
+                if (overlayColor.isSpecified) drawRect(overlayColor)
+                drawRect(surfaceColor)
+            },
+        )
+    }
 }
 
 /** 形状常量。稳定实例让 ShapeProvider 的 Outline 缓存与 DrawBackdropElement 相等性判定生效。 */

@@ -454,7 +454,12 @@ object DatabaseManager {
         }
     }
 
-    fun searchWords(db: SQLiteDatabase, keyword: String, limit: Int = 50): List<WordDetail> {
+    fun searchWords(
+        db: SQLiteDatabase,
+        keyword: String,
+        limit: Int = 50,
+        dbName: String? = null,
+    ): List<WordDetail> {
         if (!tableExists(db, "words")) return emptyList()
         val results = mutableListOf<WordDetail>()
         val like = "%$keyword%"
@@ -484,6 +489,7 @@ object DatabaseManager {
                         relWords = queryRelWords(db, wordId),
                         synos = querySynos(db, wordId),
                         antos = queryAntos(db, wordId),
+                        dbName = dbName?.removeSuffix(".db"),
                     )
                 )
             }

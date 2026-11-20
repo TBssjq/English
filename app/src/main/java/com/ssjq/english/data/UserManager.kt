@@ -157,13 +157,19 @@ object UserManager {
         prefs.edit { remove(KEY_CURRENT_BOOK) }
     }
 
+    /** 解析刷题记录数组；损坏内容按空数组处理 */
+    private fun parseQuizRecords(): org.json.JSONArray {
+        val raw = prefs.getString(KEY_QUIZ_RECORDS, null) ?: return org.json.JSONArray()
+        return runCatching { org.json.JSONArray(raw) }.getOrDefault(org.json.JSONArray())
+    }
+
     /**
      * 保存刷题记录
      * @param record JSON 格式的记录字符串
      */
     @Synchronized
     fun saveQuizRecord(record: String) {
-        val records = org.json.JSONArray(prefs.getString(KEY_QUIZ_RECORDS, null) ?: "[]")
+        val records = parseQuizRecords()
         val obj = org.json.JSONObject(record)
         records.put(obj)
 
@@ -176,12 +182,8 @@ object UserManager {
         prefs.edit { putString(KEY_QUIZ_RECORDS, trimmed.toString()) }
     }
 
-    /** 读取全部刷题记录（JSON 数组字符串），无记录时返回 "[]" */
-    fun getQuizRecords(): String {
-        val raw = prefs.getString(KEY_QUIZ_RECORDS, null) ?: return "[]"
-        org.json.JSONArray(raw)
-        return raw
-    }
+    /** 读取全部刷题记录（JSON 数组字符串），无记录或损坏时返回 "[]" */
+    fun getQuizRecords(): String = parseQuizRecords().toString()
 
     /** 保存测验断点；同参数下次进入时用它重建同一套题并回到原题号 */
     fun saveQuizProgress(json: String) {
@@ -196,10 +198,9 @@ object UserManager {
 
     /** 最近一次测验记录，用于结果页回顾与对比 */
     fun getLastQuizRecord(): QuizRecordSummary? {
-        val raw = prefs.getString(KEY_QUIZ_RECORDS, null) ?: return null
-        val arr = org.json.JSONArray(raw)
+        val arr = parseQuizRecords()
         if (arr.length() == 0) return null
-        val o = arr.getJSONObject(arr.length() - 1)
+        val o = arr.optJSONObject(arr.length() - 1) ?: return null
         return QuizRecordSummary(
             timestamp = o.optLong("timestamp", 0L),
             accuracy = o.optInt("accuracy", 0),

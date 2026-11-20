@@ -5,6 +5,7 @@ package com.ssjq.english.ui.search
 import com.ssjq.english.ui.common.glassInnerShadow
 import com.ssjq.english.ui.common.glassShadow
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +70,7 @@ import com.kyant.backdrop.shadow.Shadow
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.ui.common.LiquidGlassListItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -106,11 +108,15 @@ fun SearchScreen(
                 results = withContext(Dispatchers.IO) {
                     val db = DatabaseManager.openDatabase(context, dbName)
                     try {
-                        DatabaseManager.searchWords(db, kw)
+                        DatabaseManager.searchWords(db, kw, dbName = dbName)
                     } finally {
                         DatabaseManager.release(db)
                     }
                 }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                results = emptyList()
+                Toast.makeText(context, "词库读取失败", Toast.LENGTH_SHORT).show()
             } finally {
                 // 只有「自己仍是最新一次查询」时才收起转圈：
                 // 被取消的旧任务若也来重置，会把新查询的转圈提前关掉。

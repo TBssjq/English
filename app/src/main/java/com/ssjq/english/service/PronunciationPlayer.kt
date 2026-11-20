@@ -12,35 +12,47 @@ class PronunciationPlayer {
 
     private var player: MediaPlayer? = null
 
+    @Synchronized
     fun speak(word: String, type: Int = 2) {
         release()
         val encoded = URLEncoder.encode(word, "UTF-8")
         val url = "https://dict.youdao.com/dictvoice?audio=$encoded&type=$type"
-        val created = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .build()
-            )
-            setDataSource(url)
-            setOnPreparedListener { start() }
-            setOnCompletionListener { mp -> finish(mp) }
-            setOnErrorListener { mp, _, _ ->
-                finish(mp)
-                true
+        var created: MediaPlayer? = null
+        val result = runCatching {
+            created = MediaPlayer()
+            created!!.apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .build()
+                )
+                setDataSource(url)
+                setOnPreparedListener { start() }
+                setOnCompletionListener { mp -> finish(mp) }
+                setOnErrorListener { mp, _, _ ->
+                    finish(mp)
+                    true
+                }
+                prepareAsync()
             }
-            prepareAsync()
         }
-        player = created
+        result.onSuccess { player = created }
+        result.onFailure { e ->
+            created?.release()
+            player = null
+            throw e
+        }
     }
 
+    @Synchronized
     fun release() {
         player?.release()
         player = null
     }
 
     /** 播完或出错：释放该实例；它仍是当前实例时顺带清空字段，避免留下已释放的引用 */
+    @Synchronized
     private fun finish(mp: MediaPlayer) {
         mp.release()
         if (player === mp) player = null

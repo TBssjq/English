@@ -93,6 +93,10 @@ private fun crazyQuizSourceKey(source: CrazyQuizSource, dbName: String?): String
     CrazyQuizSource.LIBRARY -> "crazy|library|${dbName?.removeSuffix(".db").orEmpty()}"
 }
 
+/** 词库名与单词编号共同标识题源，避免不同词库相同 word_id 互相覆盖 */
+private fun wordSourceId(dbName: String, wordId: String): String =
+    "${dbName.removeSuffix(".db")}#$wordId"
+
 /** 读取同一题源、同一题量上次的题序，退出后按原词序恢复 */
 private fun savedQuizSourceIds(sourceKey: String, count: Int): List<String> {
     val raw = UserManager.getQuizProgress() ?: return emptyList()
@@ -136,12 +140,7 @@ fun CrazyQuizScreen(
         // 几十个词库时明显卡顿。改为 IO 线程一次解析出各词库计数。
         // IO 线程只负责取值，状态回到主线程赋值
         val (w, f) = withContext(Dispatchers.IO) {
-            val wMap = UserLibrary.wrongCountByDb()
-            val fMap = UserLibrary.favoriteCountByDb()
-            // 词单里的 dbName 已统一去掉 .db 后缀，allDbs 是带后缀的资产文件名，
-            // 查表前必须对齐，否则永远查不到，错题本会显示「暂无错题」且点不动
-            allDbs.sumOf { wMap[it.removeSuffix(".db")] ?: 0 } to
-                allDbs.sumOf { fMap[it.removeSuffix(".db")] ?: 0 }
+            UserLibrary.allWrongWords().size to UserLibrary.allFavorites().size
         }
         wrongCount = w
         favoriteCount = f
@@ -155,9 +154,21 @@ fun CrazyQuizScreen(
     // 每次开始疯狂刷题前都先选题量
     var showCountDialog by remember { mutableStateOf(false) }
     var quizCount by remember { mutableStateOf(20) }
+    var savedCounts by remember { mutableStateOf<Set<Int>>(emptySet()) }
     // 全应用共享的背景采样层与玻璃配色
     val liquidBackdrop = LocalAppBackdrop.current
     val glassSurface = LocalGlassPalette.current.surfaceTint
+
+    LaunchedEffect(showCountDialog, selectedSource, selectedDb) {
+        if (!showCountDialog) return@LaunchedEffect
+        val source = selectedSource ?: return@LaunchedEffect
+        val key = crazyQuizSourceKey(source, selectedDb)
+        savedCounts = withContext(Dispatchers.IO) {
+            listOf(10, 20, 30, 50, 100)
+                .filter { savedQuizSourceIds(key, it).isNotEmpty() }
+                .toSet()
+        }
+    }
 
     LaunchedEffect(startQuizTrigger) {
         val source = startQuizTrigger ?: return@LaunchedEffect
@@ -165,12 +176,12 @@ fun CrazyQuizScreen(
         // 切换 + 一次开库 + 6 张关联表查询），100 条就是 100 次往返，错题本/
         // 收藏夹较大时点击「开始刷题」会明显卡住界面
         val key = crazyQuizSourceKey(source, selectedDb)
-        val savedIds = savedQuizSourceIds(key, quizCount)
+        val savedIds = withContext(Dispatchers.IO) { savedQuizSourceIds(key, quizCount) }
         val words = withContext(Dispatchers.IO) {
             when (source) {
                 CrazyQuizSource.WRONG -> {
                     val all = UserLibrary.allWrongWords()
-                    val byId = all.associateBy { it.wordId }
+                    val byId = all.associateBy { wordSourceId(it.dbName, it.wordId) }
                     if (savedIds.isNotEmpty()) {
                         savedIds.mapNotNull { byId[it] }.take(quizCount)
                             .mapNotNull { loadEntryDetail(context, it) }
@@ -181,7 +192,7 @@ fun CrazyQuizScreen(
                 }
                 CrazyQuizSource.FAVORITE -> {
                     val all = UserLibrary.allFavorites()
-                    val byId = all.associateBy { it.wordId }
+                    val byId = all.associateBy { wordSourceId(it.dbName, it.wordId) }
                     if (savedIds.isNotEmpty()) {
                         savedIds.mapNotNull { byId[it] }.take(quizCount)
                             .mapNotNull { loadEntryDetail(context, it) }
@@ -195,11 +206,18 @@ fun CrazyQuizScreen(
                     // openDatabase 需要带 .db 后缀的资产文件名，缺失时补上，
                     // 避免 FileNotFoundException
                     val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
+                    val canonicalDb = dbName.removeSuffix(".db")
                     val db = DatabaseManager.openDatabase(context, dbName)
                     try {
                         if (savedIds.isNotEmpty()) {
-                            savedIds.take(quizCount)
-                                .mapNotNull { DatabaseManager.getWordDetail(db, it, dbName) }
+                            savedIds.take(quizCount).mapNotNull { saved ->
+                                val wordId = saved.substringAfter('#')
+                                if (saved.substringBefore('#') == canonicalDb) {
+                                    DatabaseManager.getWordDetail(db, wordId, dbName)
+                                } else {
+                                    null
+                                }
+                            }
                         } else {
                             DatabaseManager.getWordList(db)
                                 .shuffled()
@@ -539,8 +557,6 @@ fun CrazyQuizScreen(
 
     if (showCountDialog) {
         val options = listOf(10, 20, 30, 50, 100)
-        val source = selectedSource
-        val key = if (source != null) crazyQuizSourceKey(source, selectedDb) else ""
         AlertDialog(
             onDismissRequest = { showCountDialog = false },
             title = { Text("刷多少题？") },
@@ -557,10 +573,10 @@ fun CrazyQuizScreen(
                             onClick = { startSelectedQuiz(count) },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            val saved = savedQuizSourceIds(key, count)
+                            val saved = savedCounts.contains(count)
                             Text(
-                                if (saved.isEmpty()) "$count 题" else "$count 题 · 可继续上次",
-                                fontWeight = if (saved.isEmpty()) FontWeight.Normal else FontWeight.SemiBold,
+                                if (!saved) "$count 题" else "$count 题 · 可继续上次",
+                                fontWeight = if (!saved) FontWeight.Normal else FontWeight.SemiBold,
                             )
                         }
                     }
@@ -621,7 +637,8 @@ private fun loadEntryDetail(context: android.content.Context, entry: WordEntry):
     val dbFileName = if (entry.dbName.endsWith(".db")) entry.dbName else "${entry.dbName}.db"
     val db = DatabaseManager.openDatabase(context, dbFileName)
     return try {
-        DatabaseManager.getWordDetail(db, entry.wordId)?.copy(dbName = dbFileName)
+        DatabaseManager.getWordDetail(db, entry.wordId)
+            ?.copy(dbName = dbFileName.removeSuffix(".db"))
     } finally {
         DatabaseManager.release(db)
     }

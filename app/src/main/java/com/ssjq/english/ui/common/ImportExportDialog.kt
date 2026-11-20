@@ -31,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +49,7 @@ import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.LibraryFileManager
 import com.ssjq.english.data.LibraryRepository
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -70,6 +72,14 @@ fun ImportExportDialog(
     var selectedGroupName by remember { mutableStateOf("") }
     var selectedDbName by remember { mutableStateOf("") }
     var selectedContentType by remember { mutableStateOf(ExportContentType.BOTH) }
+
+    LaunchedEffect(visible) {
+        if (!visible) {
+            showStrategyDialog = false
+            showExportScopeDialog = false
+            pendingUri = null
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
@@ -440,23 +450,29 @@ internal suspend fun performExport(
     groupName: String,
     dbName: String,
     contentType: ExportContentType,
-): String {
+): String = runCatching {
     val data = when (scope) {
         ExportScope.ALL -> LibraryRepository.exportAll(contentType)
         ExportScope.GROUP -> LibraryRepository.exportByGroup(groupName, contentType)
         ExportScope.SINGLE -> LibraryRepository.exportByDbName(dbName, contentType)
     }
     LibraryFileManager.writeFile(context, uri, data)
-    return "导出成功"
+    "导出成功"
+}.getOrElse { e ->
+    if (e is CancellationException) throw e
+    "导出失败：${e.message ?: "文件无法写入"}"
 }
 
 internal suspend fun performImport(
     context: Context,
     uri: Uri,
     strategy: ImportConflictStrategy,
-): String {
+): String = runCatching {
     val jsonString = LibraryFileManager.readFile(context, uri)
     LibraryFileManager.validateJson(jsonString)
     val data = LibraryFileManager.deserializeFromJson(jsonString)
-    return LibraryRepository.importData(data, strategy).message
+    LibraryRepository.importData(data, strategy).message
+}.getOrElse { e ->
+    if (e is CancellationException) throw e
+    "导入失败：${e.message ?: "文件格式不正确"}"
 }

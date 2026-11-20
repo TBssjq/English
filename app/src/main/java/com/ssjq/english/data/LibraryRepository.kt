@@ -50,6 +50,9 @@ object LibraryRepository {
 
     private val mutex = Mutex()
 
+    private fun entryKey(entry: WordEntry): String =
+        "${entry.wordId}#${entry.dbName.removeSuffix(".db")}"
+
     suspend fun getAllEntries(): Pair<List<WordEntry>, List<WordEntry>> = mutex.withLock {
         getAllEntriesUnsafe()
     }
@@ -66,6 +69,8 @@ object LibraryRepository {
     ): ImportResult = mutex.withLock {
         val backupWrong = UserLibrary.readList(UserLibrary.KEY_WRONG)
         val backupFav = UserLibrary.readList(UserLibrary.KEY_FAVORITE)
+        val importedWrong = data.wrongWords.distinctBy(::entryKey)
+        val importedFav = data.favorites.distinctBy(::entryKey)
 
         return try {
             var addedWrong = 0
@@ -75,30 +80,29 @@ object LibraryRepository {
             when (strategy) {
                 ImportConflictStrategy.OVERWRITE -> {
                     // 即使导入文件里列表为空，也要写入空列表以清空旧数据
-                    UserLibrary.writeList(UserLibrary.KEY_WRONG, data.wrongWords)
-                    addedWrong = data.wrongWords.size
-                    UserLibrary.writeList(UserLibrary.KEY_FAVORITE, data.favorites)
-                    addedFav = data.favorites.size
+                    UserLibrary.writeList(UserLibrary.KEY_WRONG, importedWrong)
+                    addedWrong = importedWrong.size
+                    UserLibrary.writeList(UserLibrary.KEY_FAVORITE, importedFav)
+                    addedFav = importedFav.size
                 }
 
                 ImportConflictStrategy.MERGE_DUPLICATE -> {
                     val existingWrong = backupWrong.toMutableList()
-                    // 使用可变集合并在插入时回写，导入文件自身含重复项时不会重复插入
-                    val existingWrongKeys = existingWrong.map { "${it.wordId}_${it.dbName}" }.toMutableSet()
-                    data.wrongWords.forEach { entry ->
-                        val key = "${entry.wordId}_${entry.dbName}"
-                        if (existingWrongKeys.add(key)) {
+                    val existingWrongKeys = existingWrong.map(::entryKey).toMutableSet()
+                    importedWrong.forEach { entry ->
+                        if (existingWrongKeys.add(entryKey(entry))) {
                             existingWrong.add(entry)
                             addedWrong++
+                        } else {
+                            skipped++
                         }
                     }
                     UserLibrary.writeList(UserLibrary.KEY_WRONG, existingWrong)
 
                     val existingFav = backupFav.toMutableList()
-                    val existingFavKeys = existingFav.map { "${it.wordId}_${it.dbName}" }.toMutableSet()
-                    data.favorites.forEach { entry ->
-                        val key = "${entry.wordId}_${entry.dbName}"
-                        if (existingFavKeys.add(key)) {
+                    val existingFavKeys = existingFav.map(::entryKey).toMutableSet()
+                    importedFav.forEach { entry ->
+                        if (existingFavKeys.add(entryKey(entry))) {
                             existingFav.add(entry)
                             addedFav++
                         } else {
@@ -109,21 +113,18 @@ object LibraryRepository {
                 }
 
                 ImportConflictStrategy.SKIP_EXISTING -> {
-                    val existingWrongKeys = backupWrong.map { "${it.wordId}_${it.dbName}" }.toSet()
-                    val newWrong = data.wrongWords.filter {
-                        !existingWrongKeys.contains("${it.wordId}_${it.dbName}")
-                    }
+                    val existingWrongKeys = backupWrong.map(::entryKey).toSet()
+                    val newWrong = importedWrong.filterNot { existingWrongKeys.contains(entryKey(it)) }
                     addedWrong = newWrong.size
+                    skipped += importedWrong.size - newWrong.size
                     if (newWrong.isNotEmpty()) {
                         UserLibrary.writeList(UserLibrary.KEY_WRONG, backupWrong + newWrong)
                     }
 
-                    val existingFavKeys = backupFav.map { "${it.wordId}_${it.dbName}" }.toSet()
-                    val newFav = data.favorites.filter {
-                        !existingFavKeys.contains("${it.wordId}_${it.dbName}")
-                    }
+                    val existingFavKeys = backupFav.map(::entryKey).toSet()
+                    val newFav = importedFav.filterNot { existingFavKeys.contains(entryKey(it)) }
                     addedFav = newFav.size
-                    skipped = data.favorites.size - newFav.size
+                    skipped += importedFav.size - newFav.size
                     if (newFav.isNotEmpty()) {
                         UserLibrary.writeList(UserLibrary.KEY_FAVORITE, backupFav + newFav)
                     }
@@ -198,9 +199,7 @@ object LibraryRepository {
     }
 
     private fun getDbNamesForGroup(groupName: String): Set<String> {
-        val category = checkNotNull(LibraryCatalog.categories.find { it.name == groupName }) {
-            "导出分组不存在: $groupName"
-        }
+        val category = LibraryCatalog.categories.find { it.name == groupName } ?: return emptySet()
         return category.subcategories.flatMap { it.dbFiles }.toSet()
     }
 }

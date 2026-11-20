@@ -195,7 +195,7 @@ object AppUpdateManager {
             return NoticeData(
                 title = "更新公告 v$latest",
                 content = text,
-                isForce = false,
+                isForce = root.bool("is_force") || root.bool("forceUpdate"),
                 btnText = "知道了",
                 url = "",
             )
@@ -287,6 +287,9 @@ object AppUpdateManager {
         val uri = url.toUri()
         val scheme = uri.scheme
         if (scheme != "http" && scheme != "https") return false
+        val host = uri.host?.lowercase() ?: return false
+        val allowed = setOf("tbssjq.github.io", "gitee.com", "github.com")
+        if (allowed.none { host == it || host.endsWith(".$it") }) return false
         val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         // 清单里的 <queries> 声明了 VIEW + http(s)，否则 Android 11 起这里恒为 null
         if (intent.resolveActivity(context.packageManager) == null) return false

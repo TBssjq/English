@@ -145,17 +145,27 @@ antos(word_id, hwd)
 ```powershell
 .\gradlew.bat :app:compileDebugKotlin          # 快速编译
 .\gradlew.bat :app:testDebugUnitTest           # 单元测试
+.\gradlew.bat :app:connectedDebugAndroidTest   # 模拟器 instrumentation 测试
 .\gradlew.bat :app:assembleDebug :app:assembleRelease  # 含 R8 的完整验证
 ```
 
-当前单元测试：
+当前本地单元测试：
 
 | 文件 | 覆盖内容 |
 |---|---|
 | `data/ReviewSchedulerTest` | 评分对应的等级与间隔、等级上下限、非法评分抛出 |
 | `data/LibraryCatalogTest` | 查词层级顺序、去重、过滤未打包词库 |
-| `data/AppUpdateManagerTest` | 版本比较、公告与版本信息解析 |
+| `data/AppUpdateManagerTest` | 版本比较、公告与版本信息解析、更新日志强制标记 |
+| `ui/glass/GlassQualityTest` | 特效开关与低端设备档位、模糊降级系数 |
 | `quiz/QuizEngineTest` | 拼写判定、出题数量与模式不变量 |
+
+当前模拟器 instrumentation 测试：
+
+| 文件 | 覆盖内容 |
+|---|---|
+| `DataRepairInstrumentedTest` | 损坏词单修复、版本 1 导出文件补齐、覆盖导入去重、主 Activity 启动 |
+
+设备序列号包含冒号时，AGP 9.4.1 会把全部通过的 `connectedDebugAndroidTest` 误判为失败。可改用 `emulator-5554` 之类无冒号序列号的本地模拟器，或执行 `adb shell am instrument -r -w com.ssjq.english.test/androidx.test.runner.AndroidJUnitRunner` 直接读取 `OK (5 tests)` 结果。
 
 改动玻璃相关代码后必须跑 `assembleRelease`，确认 R8 未误删 backdrop 类。
 
@@ -182,7 +192,8 @@ antos(word_id, hwd)
 |---|---|
 | release 包玻璃全部失效 | R8 是否删除了 backdrop 类，检查 `proguard-rules.pro` |
 | 某页面背景重复或采样错位 | 是否在页面内自建 `rememberLayerBackdrop()` |
-| 滚动明显掉帧 | 列表项是否误用满配玻璃；`drawBackdrop` 参数 lambda 是否稳定 |
+| 滚动明显掉帧 | 列表项是否误用满配玻璃；玻璃组件是否使用 `rememberGlassSurfaceModifier` 缓存 modifier；低端设备是否关闭装饰层 |
+| 模拟器测试全部通过但 Gradle 判定失败 | 检查设备序列号是否包含冒号，改用无冒号序列号的本地模拟器或直接读取 `am instrument` 输出 |
 | 词库打开崩溃 | 词库名是否合法、assets 是否缺失、`words` 表是否存在 |
 | 检查更新无反应或下载 404 | `version/english.json` 的版本号与 `downloadUrl` 是否指向已发布资源 |
 | 公告不弹 | `english.log.json` 的 `latest` 或条目内容是否变化（按内容判定已读） |

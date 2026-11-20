@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -62,16 +63,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import com.ssjq.english.ui.glass.GlassQuality
 import com.ssjq.english.ui.glass.GlassShapes
 import com.ssjq.english.ui.glass.LocalGlassPalette
+import com.ssjq.english.ui.glass.rememberGlassSurfaceModifier
 import com.ssjq.english.ui.nav.MainTab
 import kotlin.math.roundToInt
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.colorControls
-import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.highlight.HighlightStyle
 import com.kyant.backdrop.shadow.InnerShadow
@@ -157,9 +154,20 @@ fun LiquidGlassCard(
     onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    // shape lambda 必须稳定：ShapeProvider 以它为相等性依据，
-    // 每次重组新建会触发 DrawBackdropNode 重建全部 RenderEffect
-    val shapeBlock = remember(shape) { { shape } }
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = shape,
+        blurRadius = blurRadius,
+        lensHeight = lensHeight,
+        lensAmount = lensAmount,
+        surfaceColor = surfaceColor,
+        highlight = highlight,
+        shadow = shadow,
+        innerShadow = innerShadow,
+        enableLens = enableLens,
+        enableVibrancy = enableVibrancy,
+        enableChromaticAberration = enableChromaticAberration,
+    )
     Box(
         modifier = modifier
             .then(
@@ -170,30 +178,7 @@ fun LiquidGlassCard(
                     )
                 } else Modifier
             )
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = shapeBlock,
-                effects = {
-                    if (enableVibrancy && GlassQuality.vibrancyEnabled) {
-                        colorControls(saturation = 1.8f)
-                    }
-                    blur(blurRadius.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (enableLens && GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = lensHeight.toPx(),
-                            refractionAmount = lensAmount.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = enableChromaticAberration,
-                        )
-                    }
-                },
-                highlight = if (highlight != null) { { highlight } } else null,
-                shadow = if (shadow != null) { { shadow } } else null,
-                innerShadow = if (innerShadow != null) { { innerShadow } } else null,
-                onDrawSurface = {
-                    drawRect(surfaceColor)
-                },
-            ),
+            .then(glass),
         content = content,
     )
 }
@@ -249,31 +234,18 @@ fun LiquidGlassSearchBar(
     val resolvedSurfaceColor = surfaceColor ?: palette.searchSurface
     val highlight = glassHighlight(0.7f)
     val glow = glassGlow(18.dp)
-    Box(
-        modifier = modifier
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = GlassShapes.FieldBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
-                    blur(11.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = 14.dp.toPx(),
-                            refractionAmount = 24.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
-                    }
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                onDrawSurface = {
-                    drawRect(resolvedSurfaceColor)
-                },
-            ),
-        content = content,
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.FieldBlock(),
+        blurRadius = 11.dp,
+        lensHeight = 14.dp,
+        lensAmount = 24.dp,
+        surfaceColor = resolvedSurfaceColor,
+        highlight = highlight,
+        shadow = glow,
+        innerShadow = null,
     )
+    Box(modifier = modifier.then(glass), content = content)
 }
 
 /**
@@ -289,30 +261,19 @@ fun LiquidGlassBadge(
 ) {
     val highlight = glassHighlight()
     val glow = glassGlow(12.dp)
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.CircleBlock(),
+        blurRadius = 5.dp,
+        lensHeight = 8.dp,
+        lensAmount = 18.dp,
+        surfaceColor = surfaceColor,
+        highlight = highlight,
+        shadow = glow,
+        innerShadow = null,
+    )
     Box(
-        modifier = modifier
-            .size(size)
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = GlassShapes.CircleBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
-                    blur(5.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = 8.dp.toPx(),
-                            refractionAmount = 18.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
-                    }
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                onDrawSurface = {
-                    drawRect(surfaceColor)
-                },
-            ),
+        modifier = modifier.size(size).then(glass),
         contentAlignment = Alignment.Center,
         content = content,
     )
@@ -332,31 +293,19 @@ fun LiquidGlassDialogSurface(
     val resolvedSurfaceColor = surfaceColor ?: palette.dialogSurface
     val highlight = glassHighlight()
     val glow = glassGlow(40.dp)
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.PanelBlock(),
+        blurRadius = 16.dp,
+        lensHeight = 22.dp,
+        lensAmount = 36.dp,
+        surfaceColor = resolvedSurfaceColor,
+        highlight = highlight,
+        shadow = glow,
+        innerShadow = glassInnerShadow(14.dp, 0.16f),
+    )
     Column(
-        modifier = modifier
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = GlassShapes.PanelBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.9f)
-                    blur(16.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = 22.dp.toPx(),
-                            refractionAmount = 36.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
-                    }
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                innerShadow = { glassInnerShadow(14.dp, 0.16f) },
-                onDrawSurface = {
-                    drawRect(resolvedSurfaceColor)
-                },
-            )
-            .padding(24.dp),
+        modifier = modifier.then(glass).padding(24.dp),
         content = content,
     )
 }
@@ -386,17 +335,21 @@ fun GlassDialogBody(text: String, modifier: Modifier = Modifier) {
  * 悬浮底栏等后绘制的元素会盖在遮罩之上。宿主据此在弹窗可见时隐藏底栏。
  */
 object GlassDialogHost {
-    private var visibleCount by mutableStateOf(0)
+    private var activeToken by mutableStateOf<Any?>(null)
 
-    val isDialogVisible: Boolean get() = visibleCount > 0
+    val isDialogVisible: Boolean get() = activeToken != null
 
-    internal fun acquire() {
-        visibleCount++
+    /** 同一时刻只允许一个玻璃弹窗显示，后到的弹窗排队等待 */
+    fun request(token: Any): Boolean {
+        if (activeToken == null) activeToken = token
+        return activeToken == token
     }
 
-    internal fun release() {
-        visibleCount = (visibleCount - 1).coerceAtLeast(0)
+    fun release(token: Any) {
+        if (activeToken == token) activeToken = null
     }
+
+    fun isActive(token: Any): Boolean = activeToken == token
 }
 
 /**
@@ -419,13 +372,18 @@ fun LiquidGlassDialog(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     dismissOnClickOutside: Boolean = true,
+    dismissLocked: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    BackHandler(onBack = onDismissRequest)
+    val token = remember { Any() }
+    val dialogVisible = GlassDialogHost.isDialogVisible
+    val active = GlassDialogHost.isActive(token)
+    LaunchedEffect(dialogVisible) { GlassDialogHost.request(token) }
+    if (!active) return
 
+    BackHandler(enabled = !dismissLocked, onBack = onDismissRequest)
     DisposableEffect(Unit) {
-        GlassDialogHost.acquire()
-        onDispose { GlassDialogHost.release() }
+        onDispose { GlassDialogHost.release(token) }
     }
 
     var visible by remember { mutableStateOf(false) }
@@ -452,8 +410,11 @@ fun LiquidGlassDialog(
         modifier = Modifier
             .fillMaxSize()
             .background(dimColor)
+            .pointerInput(Unit) {
+                detectDragGestures(onDrag = { change, _ -> change.consume() })
+            }
             .then(
-                if (dismissOnClickOutside) {
+                if (dismissOnClickOutside && !dismissLocked) {
                     Modifier.clickable(
                         interactionSource = null,
                         indication = null,
@@ -466,11 +427,18 @@ fun LiquidGlassDialog(
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            modifier = Modifier.graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-                this.alpha = alpha
-            }
+            modifier = Modifier
+                .clickable(
+                    enabled = true,
+                    interactionSource = null,
+                    indication = null,
+                    onClick = {},
+                )
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    this.alpha = alpha
+                }
         ) {
             LiquidGlassDialogSurface(
                 backdrop = backdrop,
@@ -496,31 +464,20 @@ fun LiquidGlassBottomBar(
     val surface = defaultGlassSurfaceColor()
     val highlight = glassHighlight(0.6f)
     val glow = glassGlow(24.dp)
-    val shapeBlock = remember(shape) { { shape } }
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = shape,
+        blurRadius = 12.dp,
+        lensHeight = 14.dp,
+        lensAmount = 24.dp,
+        surfaceColor = surface,
+        highlight = highlight,
+        shadow = glow,
+        innerShadow = null,
+        enableChromaticAberration = false,
+    )
     Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = shapeBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.8f)
-                    blur(15.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = 14.dp.toPx(),
-                            refractionAmount = 24.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
-                    }
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                onDrawSurface = {
-                    drawRect(surface)
-                },
-            ),
+        modifier = modifier.fillMaxWidth().then(glass),
         content = content,
     )
 }
@@ -539,29 +496,22 @@ fun LiquidGlassToast(
 ) {
     val highlight = glassHighlight()
     val glow = glassGlow(20.dp)
+    val glass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.CardBlock(),
+        blurRadius = 8.dp,
+        lensHeight = 12.dp,
+        lensAmount = 22.dp,
+        surfaceColor = surfaceColor,
+        highlight = highlight,
+        shadow = glow,
+        innerShadow = null,
+        enableChromaticAberration = false,
+        enableVibrancy = false,
+    )
     Row(
         modifier = modifier
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = GlassShapes.CardBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.7f)
-                    blur(9.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) {
-                        lens(
-                            refractionHeight = 12.dp.toPx(),
-                            refractionAmount = 22.dp.toPx(),
-                            depthEffect = true,
-                            chromaticAberration = true,
-                        )
-                    }
-                },
-                highlight = { highlight },
-                shadow = { glow },
-                onDrawSurface = {
-                    drawRect(surfaceColor)
-                },
-            )
+            .then(glass)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -591,7 +541,7 @@ private fun MainTab.label(): String = when (this) {
 }
 
 /**
- * 液态玻璃底部导航栏（对齐库官方 LiquidBottomTabs 的形态）：
+ * 液态玻璃底部导航栏（形态与库官方 LiquidBottomTabs 保持一致）：
  *
  * 1. 整条底栏是一块胶囊玻璃（毛玻璃 + 折射 + 色散）；
  * 2. 选中项由一块**独立滑动**的玻璃指示器表示，切换时带弹性动画，
@@ -625,6 +575,30 @@ fun LiquidGlassBottomNavigation(
     val indicatorHighlight = glassHighlight(0.9f)
     val indicatorGlow = glassGlow(16.dp)
     val accent = MaterialTheme.colorScheme.primary
+    val barGlass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.PanelBlock(),
+        blurRadius = 12.dp,
+        lensHeight = 16.dp,
+        lensAmount = 28.dp,
+        surfaceColor = barSurface,
+        highlight = barHighlight,
+        shadow = barGlow,
+        innerShadow = null,
+        enableChromaticAberration = false,
+    )
+    val indicatorGlass = rememberGlassSurfaceModifier(
+        backdrop = backdrop,
+        shape = GlassShapes.PillBlock(),
+        blurRadius = 8.dp,
+        lensHeight = 14.dp,
+        lensAmount = 24.dp,
+        surfaceColor = accent.copy(alpha = 0.32f),
+        highlight = indicatorHighlight,
+        shadow = indicatorGlow,
+        innerShadow = null,
+        enableChromaticAberration = false,
+    )
 
     BoxWithConstraints(
         modifier = modifier
@@ -667,25 +641,7 @@ fun LiquidGlassBottomNavigation(
                         },
                     )
                 }
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = GlassShapes.PanelBlock,
-                    effects = {
-                        if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.9f)
-                        blur(16.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                        if (GlassQuality.lensEnabled) {
-                            lens(
-                                refractionHeight = 20.dp.toPx(),
-                                refractionAmount = 34.dp.toPx(),
-                                depthEffect = true,
-                                chromaticAberration = true,
-                            )
-                        }
-                    },
-                    highlight = { barHighlight },
-                    shadow = { barGlow },
-                    onDrawSurface = { drawRect(barSurface) },
-                )
+                .then(barGlass)
                 .height(64.dp)
                 .padding(horizontal = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -707,25 +663,7 @@ fun LiquidGlassBottomNavigation(
                 .width(maxWidth / tabs.size)
                 .height(56.dp)
                 .padding(horizontal = 4.dp)
-                .drawBackdrop(
-                    backdrop = backdrop,
-                    shape = GlassShapes.PillBlock,
-                    effects = {
-                        if (GlassQuality.vibrancyEnabled) colorControls(saturation = 2.1f)
-                        blur(10.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                        if (GlassQuality.lensEnabled) {
-                            lens(
-                                refractionHeight = 18.dp.toPx(),
-                                refractionAmount = 30.dp.toPx(),
-                                depthEffect = true,
-                                chromaticAberration = true,
-                            )
-                        }
-                    },
-                    highlight = { indicatorHighlight },
-                    shadow = { indicatorGlow },
-                    onDrawSurface = { drawRect(accent.copy(alpha = 0.32f)) },
-                )
+                .then(indicatorGlass)
         )
     }
 }

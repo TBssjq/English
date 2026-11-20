@@ -1,5 +1,6 @@
 package com.ssjq.english.quiz
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -47,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,7 +66,9 @@ import com.ssjq.english.data.CheckInManager
 import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 fun modeFromString(mode: String?): QuizMode? = when (mode) {
@@ -120,6 +124,7 @@ fun QuizScreen(
     onOpenWord: (String, String) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val routeSourceKey = sourceKey
     val fixedMode = remember(mode) { modeFromString(mode) }
     // key 必须带上出题参数：旧实现无 key，同一路由复用换词库/换题量时
@@ -148,7 +153,7 @@ fun QuizScreen(
     }
     val state = remember(stateKey) {
         QuizStateCache.get(stateKey) ?: QuizState(
-            context = context,
+            context = context.applicationContext,
             dbName = dbName,
             sourceWords = sourceWords,
             questionCount = questionCount,
@@ -176,15 +181,31 @@ fun QuizScreen(
         onOpenWord(target, word.wordId)
     }
 
-    LaunchedEffect(state) { state.load() }
+    val uiState = state.uiState
+    LaunchedEffect(state) {
+        try {
+            state.load()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Toast.makeText(context, "测验加载失败，请返回重试", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // 离开页面时释放播放器，否则 MediaPlayer 会随 Activity 一起泄漏
     DisposableEffect(state) {
         onDispose { state.release() }
     }
 
-    val uiState = state.uiState
     var favoriteToggle by remember { mutableStateOf(0) }
+    var isCurrentFavorite by remember { mutableStateOf(false) }
+    LaunchedEffect(state, uiState.currentQuestion, favoriteToggle) {
+        val word = uiState.currentQuestion?.word ?: return@LaunchedEffect
+        val ownerDb = word.dbName?.takeIf { it.isNotBlank() && it != "crazy_quiz" } ?: dbName
+        val favorite = withContext(Dispatchers.IO) {
+            UserLibrary.isFavorite(ownerDb, word.wordId)
+        }
+        isCurrentFavorite = favorite
+    }
     // 答过题后退出需要确认，避免误触丢失本轮进度
     var showExitConfirm by remember { mutableStateOf(false) }
 
@@ -207,10 +228,12 @@ fun QuizScreen(
         }
         if (!shouldMark) return@LaunchedEffect
         val word = uiState.currentQuestion?.word ?: return@LaunchedEffect
+        val ownerDb = word.dbName?.takeIf { it.isNotBlank() && it != "crazy_quiz" } ?: dbName
+        if (ownerDb == "crazy_quiz") return@LaunchedEffect
         val entry = WordEntry(
             wordId = word.wordId,
             headWord = word.headWord,
-            dbName = word.dbName ?: dbName,
+            dbName = ownerDb,
             tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
         )
         withContext(Dispatchers.IO) { UserLibrary.addWrong(entry) }
@@ -273,7 +296,7 @@ fun QuizScreen(
                     }
                 },
                 actions = {
-                    // 题目数量：切换后按新题量重新出题
+                    // 题目数量：切换后下一轮生效，当前轮断点保持不变
                     var showCountMenu by remember { mutableStateOf(false) }
                     Box {
                         TextButton(onClick = { showCountMenu = true }) {
@@ -307,7 +330,9 @@ fun QuizScreen(
                         onClick = {
                             val enabled = !state.autoPlayAudio
                             state.setAutoPlayAudioEnabled(enabled)
-                            UserLibrary.setAutoPlayAudio(enabled)
+                            scope.launch(Dispatchers.IO) {
+                                UserLibrary.setAutoPlayAudio(enabled)
+                            }
                         },
                     ) {
                         Icon(
@@ -322,31 +347,30 @@ fun QuizScreen(
                             val word = uiState.currentQuestion?.word ?: return@IconButton
                             // 疯狂刷题会混合多个词库出题，路由里的 dbName 只是占位符；
                             // 错题/收藏必须写回单词真实所属词库
-                            val ownerDb = word.dbName ?: dbName
+                            val ownerDb = word.dbName?.takeIf { it.isNotBlank() && it != "crazy_quiz" }
+                                ?: dbName.takeIf { it != "crazy_quiz" }
+                                ?: return@IconButton
                             val entry = WordEntry(
                                 wordId = word.wordId,
                                 headWord = word.headWord,
                                 dbName = ownerDb,
                                 tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
                             )
-                            if (UserLibrary.isFavorite(ownerDb, word.wordId)) {
-                                UserLibrary.removeFavorite(ownerDb, word.wordId)
-                            } else {
-                                UserLibrary.addFavorite(entry)
+                            scope.launch(Dispatchers.IO) {
+                                if (UserLibrary.isFavorite(ownerDb, word.wordId)) {
+                                    UserLibrary.removeFavorite(ownerDb, word.wordId)
+                                } else {
+                                    UserLibrary.addFavorite(entry)
+                                }
+                                withContext(Dispatchers.Main) { favoriteToggle++ }
                             }
-                            favoriteToggle++
                         },
                         modifier = Modifier.padding(end = 8.dp),
                     ) {
-                        val isFav = remember(favoriteToggle, uiState.currentQuestion) {
-                            uiState.currentQuestion?.word?.let {
-                                UserLibrary.isFavorite(it.dbName ?: dbName, it.wordId)
-                            } ?: false
-                        }
                         Icon(
-                            if (isFav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                            if (isFav) "已收藏" else "收藏",
-                            tint = if (isFav) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            if (isCurrentFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            if (isCurrentFavorite) "已收藏" else "收藏",
+                            tint = if (isCurrentFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     // 顶部统计：✅ ❌

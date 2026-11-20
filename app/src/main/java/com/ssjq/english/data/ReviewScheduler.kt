@@ -68,10 +68,10 @@ object ReviewScheduler {
             cache = emptyList()
             return emptyList()
         }
-        val arr = JSONArray(raw)
+        val arr = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
         val list = ArrayList<ReviewState>(arr.length())
         for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
+            val o = arr.optJSONObject(i) ?: continue
             val dbName = canonicalDb(o.optString("dbName"))
             val wordId = o.optString("wordId")
             val next = o.optString("nextReviewDate")

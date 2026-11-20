@@ -23,9 +23,8 @@ import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
 import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
-import com.ssjq.english.ui.glass.Capsule
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -50,54 +49,62 @@ fun LiquidButton(
             animationScope = animationScope
         )
     }
+    val glass = remember(backdrop, interactiveHighlight, isInteractive, tint, surfaceColor) {
+        Modifier.drawBackdrop(
+            backdrop = backdrop,
+            shape = GlassShapes.PillBlock,
+            effects = {
+                if (GlassQuality.vibrancyEnabled) colorControls(saturation = 1.5f)
+                blur(2f.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                if (GlassQuality.lensEnabled) {
+                    lens(12f.dp.toPx(), 24f.dp.toPx(), depthEffect = false, chromaticAberration = false)
+                }
+            },
+            highlight = null,
+            shadow = null,
+            innerShadow = null,
+            layerBlock = if (isInteractive) {
+                {
+                    val width = size.width
+                    val height = size.height
+
+                    val progress = interactiveHighlight.pressProgress
+                    val scale = lerp(1f, 1f + 4f.dp.toPx() / size.height, progress)
+
+                    val maxOffset = size.minDimension
+                    val initialDerivative = 0.05f
+                    val offset = interactiveHighlight.offset
+                    translationX = maxOffset * tanh(initialDerivative * offset.x / maxOffset)
+                    translationY = maxOffset * tanh(initialDerivative * offset.y / maxOffset)
+
+                    val maxDragScale = 4f.dp.toPx() / size.height
+                    val offsetAngle = atan2(offset.y, offset.x)
+                    scaleX =
+                        scale +
+                                maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
+                                (width / height).fastCoerceAtMost(1f)
+                    scaleY =
+                        scale +
+                                maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
+                                (height / width).fastCoerceAtMost(1f)
+                }
+            } else {
+                null
+            },
+            onDrawSurface = {
+                if (tint.isSpecified) {
+                    drawRect(tint, blendMode = BlendMode.Hue)
+                    drawRect(tint.copy(alpha = 0.75f))
+                }
+                if (surfaceColor.isSpecified) {
+                    drawRect(surfaceColor)
+                }
+            },
+        )
+    }
     Row(
         modifier
-            .drawBackdrop(
-                backdrop = backdrop,
-                shape = GlassShapes.PillBlock,
-                effects = {
-                    if (GlassQuality.vibrancyEnabled) vibrancy()
-                    blur(2f.dp.toPx() * GlassQuality.blurRadiusPxFactor)
-                    if (GlassQuality.lensEnabled) lens(12f.dp.toPx(), 24f.dp.toPx())
-                },
-                layerBlock = if (isInteractive) {
-                    {
-                        val width = size.width
-                        val height = size.height
-
-                        val progress = interactiveHighlight.pressProgress
-                        val scale = lerp(1f, 1f + 4f.dp.toPx() / size.height, progress)
-
-                        val maxOffset = size.minDimension
-                        val initialDerivative = 0.05f
-                        val offset = interactiveHighlight.offset
-                        translationX = maxOffset * tanh(initialDerivative * offset.x / maxOffset)
-                        translationY = maxOffset * tanh(initialDerivative * offset.y / maxOffset)
-
-                        val maxDragScale = 4f.dp.toPx() / size.height
-                        val offsetAngle = atan2(offset.y, offset.x)
-                        scaleX =
-                            scale +
-                                    maxDragScale * abs(cos(offsetAngle) * offset.x / size.maxDimension) *
-                                    (width / height).fastCoerceAtMost(1f)
-                        scaleY =
-                            scale +
-                                    maxDragScale * abs(sin(offsetAngle) * offset.y / size.maxDimension) *
-                                    (height / width).fastCoerceAtMost(1f)
-                    }
-                } else {
-                    null
-                },
-                onDrawSurface = {
-                    if (tint.isSpecified) {
-                        drawRect(tint, blendMode = BlendMode.Hue)
-                        drawRect(tint.copy(alpha = 0.75f))
-                    }
-                    if (surfaceColor.isSpecified) {
-                        drawRect(surfaceColor)
-                    }
-                }
-            )
+            .then(glass)
             .clickable(
                 interactionSource = null,
                 indication = if (isInteractive) null else LocalIndication.current,

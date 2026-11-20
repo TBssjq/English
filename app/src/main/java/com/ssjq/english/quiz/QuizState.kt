@@ -58,12 +58,17 @@ class QuizState(
     var previousRecord: QuizRecordSummary? = null
         private set
 
-    /** 当前题量上限，测验中可调整；调整后重新出题 */
+    /** 当前题量上限，测验中可调整；调整后下一轮生效 */
     private var _questionCountLimit by mutableStateOf(questionCount)
-    val questionCountLimit: Int get() = _questionCountLimit
+    private var pendingQuestionCountLimit by mutableStateOf<Int?>(null)
+    val questionCountLimit: Int get() = pendingQuestionCountLimit ?: _questionCountLimit
 
     /** 本轮题目的随机种子：断点续做靠它重建出同一套题 */
     private var currentSeed: Long = 0L
+
+    /** 词库名与单词编号共同标识题源，跨词库刷题恢复时不会取错词 */
+    private fun WordDetail.sourceId(): String =
+        "${dbName?.removeSuffix(".db").orEmpty()}#$wordId"
 
     /** 当前是否处于「错题回顾」轮：回顾轮不参与打卡统计 */
     private var isReviewRound: Boolean = false
@@ -83,7 +88,8 @@ class QuizState(
                 val db = DatabaseManager.openDatabase(context, dbName)
                 try {
                     val list = DatabaseManager.getWordList(db)
-                    list.take(80).mapNotNull { DatabaseManager.getWordDetail(db, it.wordId, dbName) }
+                    list.take(maxOf(80, _questionCountLimit))
+                        .mapNotNull { DatabaseManager.getWordDetail(db, it.wordId, dbName) }
                 } finally {
                     DatabaseManager.release(db)
                 }
@@ -134,8 +140,8 @@ class QuizState(
      * 用上次保存的断点恢复：同词库、同模式、同 seed 才能重建出同一套题。
      * 数据损坏或参数不匹配时返回 false，由调用方重新出题。
      */
-    private fun tryRestore(): Boolean {
-        val raw = UserManager.getQuizProgress() ?: return false
+    private suspend fun tryRestore(): Boolean {
+        val raw = withContext(Dispatchers.IO) { UserManager.getQuizProgress() } ?: return false
         val obj = try {
             org.json.JSONObject(raw)
         } catch (e: Exception) {
@@ -150,6 +156,18 @@ class QuizState(
         val count = obj.optInt("count", 0)
         val index = obj.optInt("index", 0)
         if (seed == 0L || count <= 0) return false
+        val sourceIds = obj.optJSONArray("sourceIds")
+            ?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+        if (sourceIds.isNotEmpty()) {
+            val bySourceId = loadedWords.associateBy { it.sourceId() }
+            val restored = sourceIds.mapNotNull { bySourceId[it] }
+            if (restored.size == sourceIds.size) {
+                loadedWords = restored
+                originalWords = restored
+            }
+        }
         val rebuilt = QuizEngine.generateQuestions(loadedWords, count, fixedMode, seed = seed)
         if (rebuilt.isEmpty() || index !in rebuilt.indices) return false
         questions = rebuilt
@@ -196,19 +214,15 @@ class QuizState(
             put("correct", uiState.correctCount)
             put("wrong", uiState.wrongCount)
             put("wrongIds", org.json.JSONArray(uiState.wrongWords.map { it.wordId }))
-            put("sourceIds", org.json.JSONArray(loadedWords.map { it.wordId }))
+            put("sourceIds", org.json.JSONArray(loadedWords.map { it.sourceId() }))
         }.toString()
         UserManager.saveQuizProgress(json)
     }
 
-    /** 调整题量并重新出题；旧断点同时作废 */
+    /** 调整下一轮题量；当前轮的题目与断点保持不变 */
     fun setQuestionCount(count: Int) {
         require(count > 0) { "题量必须大于 0" }
-        if (count == _questionCountLimit) return
-        _questionCountLimit = count
-        reported = false
-        UserManager.clearQuizProgress()
-        regenerateQuestions()
+        pendingQuestionCountLimit = if (count == _questionCountLimit) null else count
     }
 
     /**
@@ -331,6 +345,8 @@ class QuizState(
         loadedWords = originalWords
         isReviewRound = false
         reported = false
+        pendingQuestionCountLimit?.let { _questionCountLimit = it }
+        pendingQuestionCountLimit = null
         // 新一轮从头开始，旧断点作废
         UserManager.clearQuizProgress()
         regenerateQuestions()

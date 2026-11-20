@@ -141,37 +141,39 @@ fun LiquidBottomTabs(
             }
         }
 
-        // 1) 整条胶囊玻璃：底栏唯一一次模糊
-        Row(
+        val decorations = GlassQuality.decorationsEnabled
+        val barModifier = remember(backdrop, dampedDragAnimation, containerColor, decorations) {
             Modifier
-                .graphicsLayer {
-                    translationX = panelOffset
-                }
+                .graphicsLayer { translationX = panelOffset }
                 .drawBackdrop(
                     backdrop = backdrop,
                     shape = GlassShapes.PillBlock,
                     effects = {
-                        blur(
-                            GlassQuality.bottomBarBlurRadius.toPx() *
-                                GlassQuality.blurRadiusPxFactor
-                        )
+                        blur(GlassQuality.adaptiveBlur(GlassQuality.bottomBarBlurRadius).toPx())
                     },
+                    highlight = null,
+                    shadow = null,
+                    innerShadow = null,
                     layerBlock = {
                         val progress = dampedDragAnimation.pressProgress
                         val scale = lerp(1f, 1f + 16f.dp.toPx() / size.width, progress)
                         scaleX = scale
                         scaleY = scale
                     },
-                    onDrawSurface = { drawRect(containerColor) }
+                    onDrawSurface = { drawRect(containerColor) },
                 )
                 .height(64f.dp)
                 .fillMaxWidth()
-                .padding(4f.dp),
-            content = {}
-        )
+                .padding(4f.dp)
+        }
 
-        // 2) 滑块指示器：直接采样应用背景，只做轻模糊
-        Box(
+        // 1) 整条胶囊玻璃：底栏唯一一次模糊
+        Row(barModifier, content = {})
+
+        val indicatorModifier = remember(
+            backdrop, dampedDragAnimation, isLtr, tabWidth, tabsCount,
+            palette.isDark, decorations,
+        ) {
             Modifier
                 .padding(horizontal = 4f.dp)
                 .graphicsLayer {
@@ -183,15 +185,19 @@ fun LiquidBottomTabs(
                     backdrop = backdrop,
                     shape = GlassShapes.PillBlock,
                     effects = {
-                        blur(2f.dp.toPx() * GlassQuality.blurRadiusPxFactor)
+                        blur(GlassQuality.adaptiveBlur(2f.dp).toPx())
                     },
-                    highlight = {
-                        Highlight.Default.copy(
-                            alpha = 0.16f + 0.24f * dampedDragAnimation.pressProgress
-                        )
-                    },
-                    shadow = { Shadow(alpha = 0.06f) },
-                    innerShadow = { InnerShadow(radius = 6f.dp, alpha = 0.10f) },
+                    highlight = if (decorations) {
+                        {
+                            Highlight.Default.copy(
+                                alpha = 0.16f + 0.24f * dampedDragAnimation.pressProgress
+                            )
+                        }
+                    } else null,
+                    shadow = if (decorations) { { Shadow(alpha = 0.06f) } } else null,
+                    innerShadow = if (decorations) {
+                        { InnerShadow(radius = 6f.dp, alpha = 0.10f) }
+                    } else null,
                     layerBlock = {
                         scaleX = dampedDragAnimation.scaleX
                         scaleY = dampedDragAnimation.scaleY
@@ -207,11 +213,14 @@ fun LiquidBottomTabs(
                             alpha = 1f - progress
                         )
                         drawRect(Color.Black.copy(alpha = 0.03f * progress))
-                    }
+                    },
                 )
                 .height(56f.dp)
                 .fillMaxWidth(1f / tabsCount)
-        )
+        }
+
+        // 2) 滑块指示器：直接采样应用背景，只做轻模糊
+        Box(indicatorModifier)
 
         // 3) 标签文字画在最上层，否则会被指示器整块盖住
         Row(

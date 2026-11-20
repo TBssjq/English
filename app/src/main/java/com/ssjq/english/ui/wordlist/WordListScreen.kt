@@ -265,8 +265,11 @@ fun WordListScreen(
                         DropdownMenuItem(
                             text = { Text(if (autoFav) "自动收藏：开启中" else "自动收藏：已关闭") },
                             onClick = {
-                                autoFav = !autoFav
-                                com.ssjq.english.data.UserLibrary.setAutoFavorite(dbName, autoFav)
+                                val next = !autoFav
+                                autoFav = next
+                                scope.launch(Dispatchers.IO) {
+                                    com.ssjq.english.data.UserLibrary.setAutoFavorite(dbName, next)
+                                }
                             },
                             leadingIcon = {
                                 Icon(
@@ -343,7 +346,7 @@ fun WordListScreen(
                             modifier = Modifier.size(24.dp),
                         )
                         Spacer(Modifier.width(10.dp))
-                        // 与恢复规则对齐：背到最后一词时详情页会从头开始，
+                        // 与恢复规则保持一致：背到最后一词时详情页会从头开始，
                         // 这里也显示「开始背诵」，避免出现「继续背诵 99/100」却从第 1 个起
                         val canContinue = studyTotal > 1 && studyIndex in 1 until (studyTotal - 1)
                         Text(

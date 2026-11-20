@@ -109,6 +109,7 @@ import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassBottomBar
 import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.ReviewScheduler
 import com.ssjq.english.ui.common.LiquidGlassListItem
@@ -263,7 +264,9 @@ fun WordDetailScreen(
     // 只有正式背诵会话才写进度：复习队列与"只看一眼"的详情页下标语义不同，
     // 无条件写入会把正常背诵进度挪到无关位置
     LaunchedEffect(currentIndex, isStudyMode, trackProgress) {
-        if (isStudyMode && trackProgress) UserLibrary.saveStudyIndex(dbName, currentIndex)
+        if (isStudyMode && trackProgress) {
+            withContext(Dispatchers.IO) { UserLibrary.saveStudyIndex(dbName, currentIndex) }
+        }
     }
 
     // 学习时长追踪：进入页面开始计时，离开时按分钟累加到打卡记录
@@ -271,7 +274,11 @@ fun WordDetailScreen(
     DisposableEffect(Unit) {
         onDispose {
             val minutes = ((System.currentTimeMillis() - sessionStart) / 60000L).toInt().coerceAtLeast(0)
-            if (minutes > 0) CheckInManager.accumulate(addMinutes = minutes)
+            if (minutes > 0) {
+                reviewScope.launch(Dispatchers.IO) {
+                    CheckInManager.accumulate(addMinutes = minutes)
+                }
+            }
         }
     }
 
@@ -342,7 +349,17 @@ fun WordDetailScreen(
         }
     }
 
-    fun handleWordClick(word: String) {
+    fun closeWordSearch() {
+        showWordSearch = false
+        searchResults = emptyList()
+        searchDone = false
+        searchError = null
+        searchLoading = false
+    }
+
+    fun openWordSearch(word: String) {
+        showExamplePanel = false
+        showSpellPanel = false
         searchKeyword = word
         // 清掉上一轮结果，避免新一次查找先闪一下旧内容
         searchResults = emptyList()
@@ -418,37 +435,46 @@ fun WordDetailScreen(
 
     fun toggleFavorite() {
         val word = detail ?: return
-        if (isFavorite) {
-            UserLibrary.removeFavorite(dbName, word.wordId)
-            isFavorite = false
-        } else {
-            UserLibrary.addFavorite(
-                WordEntry(
-                    wordId = word.wordId,
-                    headWord = word.headWord,
-                    dbName = dbName,
-                    tranCn = word.trans.firstOrNull()?.tranCn,
-                )
-            )
-            isFavorite = true
+        val current = isFavorite
+        val entry = WordEntry(
+            wordId = word.wordId,
+            headWord = word.headWord,
+            dbName = dbName,
+            tranCn = word.trans.firstOrNull()?.tranCn,
+        )
+        reviewScope.launch {
+            val next = withContext(Dispatchers.IO) {
+                if (current) {
+                    UserLibrary.removeFavorite(dbName, word.wordId)
+                    false
+                } else {
+                    UserLibrary.addFavorite(entry)
+                    true
+                }
+            }
+            isFavorite = next
         }
     }
 
     fun markWrong() {
         val word = detail ?: return
         if (!isWrong) {
+            val currentFavorite = isFavorite
             val entry = WordEntry(
                 wordId = word.wordId,
                 headWord = word.headWord,
                 dbName = dbName,
                 tranCn = word.trans.firstOrNull()?.tranCn,
             )
-            UserLibrary.addWrong(entry)
-            isWrong = true
-            // 自动收藏开关：开启时同步加入收藏夹
-            if (UserLibrary.autoFavoriteEnabled(dbName) && !isFavorite) {
-                UserLibrary.addFavorite(entry)
-                isFavorite = true
+            reviewScope.launch {
+                val (wrong, favorite) = withContext(Dispatchers.IO) {
+                    UserLibrary.addWrong(entry)
+                    val autoFavorite = UserLibrary.autoFavoriteEnabled(dbName)
+                    if (autoFavorite && !currentFavorite) UserLibrary.addFavorite(entry)
+                    true to (currentFavorite || autoFavorite)
+                }
+                isWrong = wrong
+                isFavorite = favorite
             }
         }
     }
@@ -456,8 +482,10 @@ fun WordDetailScreen(
     fun markKnown() {
         // 「认识」后从错题本移除
         if (isWrong) {
-            UserLibrary.removeWrong(dbName, currentWordId)
-            isWrong = false
+            reviewScope.launch(Dispatchers.IO) {
+                UserLibrary.removeWrong(dbName, currentWordId)
+                withContext(Dispatchers.Main) { isWrong = false }
+            }
         }
     }
 
@@ -625,8 +653,14 @@ fun WordDetailScreen(
                                             }
                                         }
                                         // 上下滑动：辅助面板（需先翻面看释义）
-                                        dy < -160 && revealed -> showExamplePanel = true
+                                        dy < -160 && revealed -> {
+                                            closeWordSearch()
+                                            showSpellPanel = false
+                                            showExamplePanel = true
+                                        }
                                         dy > 160 && revealed -> {
+                                            closeWordSearch()
+                                            showExamplePanel = false
                                             showSpellPanel = true
                                             spellInput = ""
                                             spellResult = null
@@ -813,7 +847,7 @@ fun WordDetailScreen(
                                         word.phrases.forEach {
                                             Spacer(Modifier.height(8.dp))
                                             GlassMiniCard(backdrop = liquidBackdrop) {
-                                                ClickableWordText(it.content ?: "", onWordClick = { handleWordClick(it) })
+                                                ClickableWordText(it.content ?: "", onWordClick = { openWordSearch(it) })
                                                 Text(it.cn ?: "",
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -828,7 +862,7 @@ fun WordDetailScreen(
                                             GlassMiniCard(backdrop = liquidBackdrop) {
                                                 val enText = s.content ?: ""
                                                 val cnText = s.cn ?: ""
-                                                ClickableWordText(enText, onWordClick = { handleWordClick(it) })
+                                                ClickableWordText(enText, onWordClick = { openWordSearch(it) })
                                                 if (cnText.isNotBlank()) {
                                                     Spacer(Modifier.height(4.dp))
                                                     Text(cnText,
@@ -969,119 +1003,96 @@ fun WordDetailScreen(
     }
 
     if (showWordSearch) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = {
-                showWordSearch = false
-                searchResults = emptyList()
-                searchDone = false
-                searchKeyword = ""
-            },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
+            onDismissRequest = { closeWordSearch() },
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = GlassShapes.Card,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (searchDone && searchResults.isNotEmpty()) {
-                                "查找 \"$searchKeyword\"（${searchResults.size}）"
-                            } else {
-                                "查找 \"$searchKeyword\""
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        IconButton(onClick = {
-                            showWordSearch = false
-                            searchResults = emptyList()
-                            searchDone = false
-                            searchKeyword = ""
-                        }) {
-                            Icon(Icons.Filled.Close, "关闭")
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
+                Text(
+                    if (searchDone && searchResults.isNotEmpty()) {
+                        "查找 \"$searchKeyword\"（${searchResults.size}）"
+                    } else {
+                        "查找 \"$searchKeyword\""
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                IconButton(onClick = { closeWordSearch() }) {
+                    Icon(Icons.Filled.Close, "关闭")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
 
-                    if (searchLoading) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
-                        ) {
-                            androidx.compose.material3.CircularProgressIndicator()
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                "正在查找可用的词库…",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    } else if (searchResults.isNotEmpty()) {
-                        // 覆盖全部词库的结果，按「精确 > 前缀 > 包含」排序；
-                        // 点任意一条进入对应词库中的单词卡片
-                        LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(
-                                items = searchResults,
-                                key = { "${it.dbName}-${it.word.wordId}" },
-                            ) { result ->
-                                SearchResultRow(
-                                    backdrop = liquidBackdrop,
-                                    result = result,
-                                    currentDb = dbName,
-                                    onClick = {
-                                        showWordSearch = false
-                                        searchResults = emptyList()
-                                        searchDone = false
-                                        if (result.dbName == dbName && wordQueue != null) {
-                                            val idx = wordQueue.indexOf(result.word.wordId)
-                                            if (idx >= 0) {
-                                                wordHistory.add(currentIndex)
-                                                if (wordHistory.size > MAX_WORD_HISTORY) {
-                                                    wordHistory.removeAt(0)
-                                                }
-                                                currentIndex = idx
-                                            } else {
-                                                // 当前词库但不在本次队列里，按跨词库跳转处理
-                                                onNavigateToWord(dbName, result.word.wordId)
-                                            }
-                                        } else {
-                                            onNavigateToWord(result.dbName, result.word.wordId)
+            if (searchLoading) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "正在查找可用的词库…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (searchResults.isNotEmpty()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(
+                        items = searchResults,
+                        key = { "${it.dbName}-${it.word.wordId}" },
+                    ) { result ->
+                        SearchResultRow(
+                            backdrop = liquidBackdrop,
+                            result = result,
+                            currentDb = dbName,
+                            onClick = {
+                                closeWordSearch()
+                                if (result.dbName == dbName && wordQueue != null) {
+                                    val idx = wordQueue.indexOf(result.word.wordId)
+                                    if (idx >= 0) {
+                                        wordHistory.add(currentIndex)
+                                        if (wordHistory.size > MAX_WORD_HISTORY) {
+                                            wordHistory.removeAt(0)
                                         }
-                                    },
-                                )
-                            }
-                        }
-                    } else if (searchDone) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(
-                                Icons.Filled.SearchOff,
-                                null,
-                                modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                searchError?.let { "查找失败：$it" }
-                                    ?: "未找到单词 \"$searchKeyword\"",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                                        currentIndex = idx
+                                    } else {
+                                        onNavigateToWord(dbName, result.word.wordId)
+                                    }
+                                } else {
+                                    onNavigateToWord(result.dbName, result.word.wordId)
+                                }
+                            },
+                        )
                     }
+                }
+            } else if (searchDone) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        Icons.Filled.SearchOff,
+                        null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        searchError?.let { "查找失败：$it" }
+                            ?: "未找到单词 \"$searchKeyword\"",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -1090,42 +1101,34 @@ fun WordDetailScreen(
     // 例句面板：上滑触发
     if (showExamplePanel && detail != null) {
         val word = detail!!
-        androidx.compose.ui.window.Dialog(
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
             onDismissRequest = { showExamplePanel = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = GlassShapes.Panel,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            "${word.headWord} 的例句",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { showExamplePanel = false }) {
-                            Icon(Icons.Filled.Close, "关闭")
-                        }
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    word.sentences.forEach { s ->
-                        Spacer(Modifier.height(8.dp))
-                        GlassMiniCard(backdrop = liquidBackdrop) {
-                            ClickableWordText(s.content ?: "", onWordClick = { handleWordClick(it) })
-                            if (!s.cn.isNullOrBlank()) {
-                                Spacer(Modifier.height(4.dp))
-                                Text(s.cn, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                Text(
+                    "${word.headWord} 的例句",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { showExamplePanel = false }) {
+                    Icon(Icons.Filled.Close, "关闭")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                word.sentences.forEach { s ->
+                    Spacer(Modifier.height(8.dp))
+                    GlassMiniCard(backdrop = liquidBackdrop) {
+                        ClickableWordText(s.content ?: "", onWordClick = { openWordSearch(it) })
+                        if (!s.cn.isNullOrBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(s.cn, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -1136,68 +1139,60 @@ fun WordDetailScreen(
     // 拼写面板：下滑触发
     if (showSpellPanel && detail != null) {
         val word = detail!!
-        androidx.compose.ui.window.Dialog(
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
             onDismissRequest = { showSpellPanel = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                shape = GlassShapes.Panel,
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            "拼写 ${word.headWord}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        IconButton(onClick = { showSpellPanel = false }) {
-                            Icon(Icons.Filled.Close, "关闭")
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        word.trans.firstOrNull()?.tranCn ?: "请根据释义拼写单词",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    OutlinedTextField(
-                        value = spellInput,
-                        onValueChange = { spellInput = it; spellResult = null },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("输入单词") },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surface,
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        ),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = {
-                            spellResult = spellInput.trim().equals(word.headWord, ignoreCase = true)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("提交")
-                    }
-                    if (spellResult != null) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            if (spellResult == true) "✓ 正确" else "✗ 正确答案是 ${word.headWord}",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (spellResult == true) MaterialTheme.colorScheme.tertiary
-                            else MaterialTheme.colorScheme.error,
-                        )
-                    }
+                Text(
+                    "拼写 ${word.headWord}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { showSpellPanel = false }) {
+                    Icon(Icons.Filled.Close, "关闭")
                 }
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                word.trans.firstOrNull()?.tranCn ?: "请根据释义拼写单词",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = spellInput,
+                onValueChange = { spellInput = it; spellResult = null },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("输入单词") },
+                singleLine = true,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    spellResult = spellInput.trim().equals(word.headWord, ignoreCase = true)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("提交")
+            }
+            if (spellResult != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (spellResult == true) "✓ 正确" else "✗ 正确答案是 ${word.headWord}",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (spellResult == true) MaterialTheme.colorScheme.tertiary
+                    else MaterialTheme.colorScheme.error,
+                )
             }
         }
     }

@@ -14,6 +14,7 @@ object LibraryFileManager {
 
     const val MIME_TYPE_JSON = "application/json"
     const val SCHEMA_VERSION = 2
+    private const val LEGACY_SCHEMA_VERSION = 1
 
     fun serializeToJson(data: ExportData): String {
         require(data.version == SCHEMA_VERSION) { "导出格式版本必须为 $SCHEMA_VERSION" }
@@ -34,36 +35,42 @@ object LibraryFileManager {
         }.toString(2)
     }
 
+    /**
+     * 读取导出文件。版本 1 缺少范围、内容类型与统计字段，统一补齐成当前结构。
+     * 版本号无法识别时在读取位置抛出，避免把未知格式当成有效数据导入。
+     */
     fun deserializeFromJson(jsonString: String): ExportData {
         val root = JSONObject(jsonString)
-        require(root.getInt("version") == SCHEMA_VERSION) {
-            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION"
+        val version = root.optInt("version", LEGACY_SCHEMA_VERSION)
+        require(version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION) {
+            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION 或 $LEGACY_SCHEMA_VERSION"
         }
         return ExportData(
-            version = root.getInt("version"),
-            exportTime = root.getLong("exportTime"),
-            scope = ExportScope.valueOf(root.getString("scope")),
-            scopeName = root.getString("scopeName"),
-            contentType = ExportContentType.valueOf(root.getString("contentType")),
-            wrongWords = jsonToEntries(root.getJSONArray("wrongWords")),
-            favorites = jsonToEntries(root.getJSONArray("favorites")),
-            totalDays = root.getInt("totalDays"),
-            currentStreak = root.getInt("currentStreak"),
-            longestStreak = root.getInt("longestStreak"),
-            totalWordsLearned = root.getInt("totalWordsLearned"),
-            totalWordsMastered = root.getInt("totalWordsMastered"),
-            totalMinutes = root.getInt("totalMinutes"),
+            version = SCHEMA_VERSION,
+            exportTime = root.optLong("exportTime", System.currentTimeMillis()),
+            scope = parseEnum(root.optString("scope"), ExportScope.ALL),
+            scopeName = root.optString("scopeName"),
+            contentType = parseEnum(root.optString("contentType"), ExportContentType.BOTH),
+            wrongWords = jsonToEntries(root.optJSONArray("wrongWords")),
+            favorites = jsonToEntries(root.optJSONArray("favorites")),
+            totalDays = root.optInt("totalDays"),
+            currentStreak = root.optInt("currentStreak"),
+            longestStreak = root.optInt("longestStreak"),
+            totalWordsLearned = root.optInt("totalWordsLearned"),
+            totalWordsMastered = root.optInt("totalWordsMastered"),
+            totalMinutes = root.optInt("totalMinutes"),
         )
     }
 
-    /** 校验文件结构。版本或必需数组缺失时直接抛出 */
+    /** 校验文件结构。版本无法识别或必需数组缺失时在读取位置抛出 */
     fun validateJson(jsonString: String) {
         val root = JSONObject(jsonString)
-        require(root.getInt("version") == SCHEMA_VERSION) {
-            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION"
+        val version = root.optInt("version", LEGACY_SCHEMA_VERSION)
+        require(version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION) {
+            "导入文件格式版本不匹配，需要 $SCHEMA_VERSION 或 $LEGACY_SCHEMA_VERSION"
         }
-        root.getJSONArray("wrongWords")
-        root.getJSONArray("favorites")
+        require(root.optJSONArray("wrongWords") != null) { "导入文件缺少错题列表" }
+        require(root.optJSONArray("favorites") != null) { "导入文件缺少收藏列表" }
     }
 
     suspend fun writeFile(context: Context, uri: Uri, data: ExportData) {
@@ -88,6 +95,9 @@ object LibraryFileManager {
         }
     }
 
+    private inline fun <reified T : Enum<T>> parseEnum(raw: String, fallback: T): T =
+        runCatching { enumValueOf<T>(raw) }.getOrDefault(fallback)
+
     private fun entriesToJson(entries: List<WordEntry>): JSONArray {
         return JSONArray().apply {
             entries.forEach { entry ->
@@ -102,20 +112,27 @@ object LibraryFileManager {
         }
     }
 
-    private fun jsonToEntries(arr: JSONArray): List<WordEntry> =
-        (0 until arr.length()).map { i ->
-            val o = arr.getJSONObject(i)
-            val wordId = o.getString("wordId")
-            val dbName = o.getString("dbName")
-            require(wordId.isNotBlank() && dbName.isNotBlank()) {
-                "导入记录缺少主键: 第 $i 条"
-            }
-            WordEntry(
-                wordId = wordId,
-                headWord = o.getString("headWord"),
-                dbName = dbName,
-                tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
-                addedAt = o.getLong("addedAt"),
+    private fun jsonToEntries(arr: JSONArray?): List<WordEntry> {
+        if (arr == null) return emptyList()
+        val seen = HashSet<String>(arr.length())
+        val list = ArrayList<WordEntry>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val wordId = o.optString("wordId")
+            val dbName = o.optString("dbName").removeSuffix(".db")
+            if (wordId.isBlank() || dbName.isBlank()) continue
+            val key = "$wordId#$dbName"
+            if (!seen.add(key)) continue
+            list.add(
+                WordEntry(
+                    wordId = wordId,
+                    headWord = o.optString("headWord"),
+                    dbName = dbName,
+                    tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
+                    addedAt = o.optLong("addedAt", 0L),
+                )
             )
         }
+        return list
+    }
 }

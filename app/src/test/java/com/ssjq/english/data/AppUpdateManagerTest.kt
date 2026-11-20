@@ -112,4 +112,21 @@ class AppUpdateManagerTest {
         assertFalse(AppUpdateManager.isVersionNewer("2.1", "2.2"))
         assertFalse(AppUpdateManager.isVersionNewer("2.2", "2.2"))
     }
+
+    @Test
+    fun 更新日志结构保留强制标记() {
+        val body = """
+            {
+              "latest": "2.4",
+              "is_force": true,
+              "entries": [
+                { "version": "2.4", "date": "2026-11-20", "changes": ["必须升级"] }
+              ]
+            }
+        """.trimIndent()
+        val notice = AppUpdateManager.parseNotice(body)
+        requireNotNull(notice)
+        assertTrue(notice.isForce)
+        assertTrue(notice.content.contains("必须升级"))
+    }
 }

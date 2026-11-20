@@ -247,11 +247,11 @@ object QuizEngine {
     }
 
     /**
-     * 计算字母级差异：按最长公共子序列对齐。
+     * 计算字母级差异：按最长公共子序列匹配。
      *
      * 逐位比较在多写或少写一个字母时会把插入点之后的字母全部判错
      * （`dissipatte` 对 `dissipate` 会标出一长串红字），
-     * 按公共子序列对齐后只标出真正多写、写错的那个字母。
+     * 按公共子序列匹配后只标出真正多写、写错的那个字母。
      */
     private fun computeCharDiff(user: String, correct: String): List<CharDiff> {
         val n = user.length

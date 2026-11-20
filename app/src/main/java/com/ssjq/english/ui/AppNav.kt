@@ -41,7 +41,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,13 +90,13 @@ import com.ssjq.english.ui.search.SearchScreen
 import com.ssjq.english.ui.worddetail.WordDetailScreen
 import com.ssjq.english.ui.worddetail.WordStudyScreen
 import com.ssjq.english.ui.wordlist.WordListScreen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
 
 /**
  * 应用导航根：用 Compose 标准库的状态切换 + AnimatedContent 实现页面导航。
- * 返回栈用 mutableStateListOf 维护，BackHandler 接管系统返回键。
+ * 页面列表用 mutableStateListOf 维护，BackHandler 接管系统返回键。
  * 不依赖 Navigation 3，避免新库版本/API 不稳定导致的编译问题。
  */
 private fun MainTab.glassIcon(): ImageVector = when (this) {
@@ -112,14 +111,19 @@ private fun MainTab.glassLabel(): String = when (this) {
     MainTab.ABOUT -> "关于作者"
 }
 
+/** 全局更新与公告弹窗使用同一条队列，同一时刻只显示一个 */
+private sealed interface GlobalDialogState {
+    data class Update(val version: AppVersion) : GlobalDialogState
+    data class Notice(val notice: NoticeData) : GlobalDialogState
+}
+
 @Composable
 fun AppNav() {
-    // 返回栈：栈底为当前页签的根页面，栈顶为当前显示页。
-    // 栈内只有 1 个元素时处于顶层，此时显示底部导航栏。
+    // 页面列表：首项为当前页签的根页面，末项为当前显示页。
+    // 列表只有 1 个元素时处于顶层，此时显示底部导航栏。
     val backStack = remember { mutableStateListOf<Any>(Home) }
     var currentTab by rememberSaveable { mutableStateOf(MainTab.STUDY) }
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var isRegistered by remember { mutableStateOf(UserManager.isRegistered()) }
 
@@ -132,52 +136,53 @@ fun AppNav() {
         return
     }
 
-    var showUpdateDialog by remember { mutableStateOf(false) }
-    var latestVersion by remember { mutableStateOf<AppVersion?>(null) }
+    var dialogQueue by remember { mutableStateOf<List<GlobalDialogState>>(emptyList()) }
+    var activeDialog by remember { mutableStateOf<GlobalDialogState?>(null) }
+    val dialogHostBusy = GlassDialogHost.isDialogVisible
 
-    var showNoticeDialog by remember { mutableStateOf(false) }
-    var latestNotice by remember { mutableStateOf<NoticeData?>(null) }
-    var pendingNotice by remember { mutableStateOf<NoticeData?>(null) }
-
-    // 启动时并发检查更新和拉取公告
+    // 网络请求绑定 LaunchedEffect 生命周期；Activity 销毁后不会继续写入界面状态
     LaunchedEffect(Unit) {
-        val updateJob = scope.launch(Dispatchers.IO) {
-            val (version, result) = AppUpdateManager.checkUpdate(context)
-            if (result == UpdateResult.NEW_VERSION_AVAILABLE && version != null) {
-                withContext(Dispatchers.Main) {
-                    latestVersion = version
-                    showUpdateDialog = true
-                }
+        val updateCheck = async(Dispatchers.IO) { AppUpdateManager.checkUpdate(context) }
+        val noticeFetch = async(Dispatchers.IO) { AppUpdateManager.fetchNotice() }
+        try {
+            val (version, updateResult) = updateCheck.await()
+            if (updateResult == UpdateResult.NEW_VERSION_AVAILABLE && version != null) {
+                dialogQueue = dialogQueue + GlobalDialogState.Update(version)
             }
-        }
 
-        val noticeJob = scope.launch(Dispatchers.IO) {
-            // 每次启动都拉一次：同一条公告只弹一次，服务端换了公告就再弹一次。
-            // 旧实现只判断「是否弹过」，作者后来发布的新公告老用户永远收不到
-            val (notice, result) = AppUpdateManager.fetchNotice()
-            if (result == NoticeResult.HAS_NOTICE && notice != null && notice.hasContent()) {
-                if (UserManager.announcementSeenKey() != notice.seenKey()) {
-                    withContext(Dispatchers.Main) { pendingNotice = notice }
-                }
+            // 每次启动都拉一次：同一条公告只弹一次，服务端换了公告就再弹一次
+            val (notice, noticeResult) = noticeFetch.await()
+            if (noticeResult == NoticeResult.HAS_NOTICE && notice != null && notice.hasContent() &&
+                UserManager.announcementSeenKey() != notice.seenKey()
+            ) {
+                dialogQueue = dialogQueue + GlobalDialogState.Notice(notice)
             }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
+        } finally {
+            updateCheck.cancel()
+            noticeFetch.cancel()
         }
-
-        updateJob.join()
-        noticeJob.join()
     }
 
-    // 公告与更新弹窗排队显示：升级首启时两者会同时到达，
-    // 直接各弹一个会叠在一起，底下的那个既看不见又抢走返回键
-    LaunchedEffect(pendingNotice, showUpdateDialog) {
-        val notice = pendingNotice ?: return@LaunchedEffect
-        if (showUpdateDialog) return@LaunchedEffect
-        latestNotice = notice
-        showNoticeDialog = true
-        pendingNotice = null
-        UserManager.setAnnouncementSeenKey(notice.seenKey())
+    // 更新与公告共用一条队列，其他玻璃弹窗正在显示时继续等待
+    LaunchedEffect(activeDialog, dialogQueue, dialogHostBusy) {
+        if (activeDialog == null && dialogQueue.isNotEmpty() && !dialogHostBusy) {
+            activeDialog = dialogQueue.first()
+            dialogQueue = dialogQueue.drop(1)
+        }
     }
 
-    // 每次重组重新计算：栈内只有根页面时处于顶层
+    // 公告真正进入组合并占用弹窗宿主后才写入已读标识
+    LaunchedEffect(activeDialog, dialogHostBusy) {
+        val current = activeDialog
+        if (current is GlobalDialogState.Notice && dialogHostBusy) {
+            UserManager.setAnnouncementSeenKey(current.notice.seenKey())
+        }
+    }
+
+    // 每次重组重新计算：列表只有根页面时处于顶层
     val isTopLevel = backStack.size <= 1
     val current: Any = backStack.last()
 
@@ -186,7 +191,7 @@ fun AppNav() {
      *
      * AnimatedContent 切换的 280ms 内，**旧页面仍然留在组合树中且完全可点击**
      * （它的返回箭头、列表项都还在）。此时若再响应一次返回或跳转，就会
-     * 一次退掉多级页面，甚至在返回途中又压入新页面，栈状态错乱。
+     * 一次退掉多级页面，甚至在返回途中又加入新页面，页面列表状态错乱。
      * 这里用一个略长于过场时长的时间窗把这类误触挡掉。
      */
     var navLockedUntil by remember { mutableStateOf(0L) }
@@ -231,23 +236,27 @@ fun AppNav() {
         backStack.add(root)
     }
 
+    fun closeActiveDialog() {
+        activeDialog = null
+    }
+
     fun openDownload() {
-        val v = latestVersion ?: return
+        val v = (activeDialog as? GlobalDialogState.Update)?.version ?: return
         // 打不开就保持弹窗并给出提示：原来的写法无条件关弹窗，链接异常时用户毫无反馈
         if (!AppUpdateManager.openDownloadUrl(context, v)) {
             Toast.makeText(context, "下载地址无效，请稍后重试", Toast.LENGTH_SHORT).show()
             return
         }
-        showUpdateDialog = false
+        closeActiveDialog()
     }
 
     fun openNoticeUrl() {
-        val n = latestNotice ?: return
+        val n = (activeDialog as? GlobalDialogState.Notice)?.notice ?: return
         if (!AppUpdateManager.openUrl(context, n.url)) {
             Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
             return
         }
-        showNoticeDialog = false
+        closeActiveDialog()
     }
 
     BackHandler(enabled = backStack.size > 1) { back() }
@@ -281,7 +290,7 @@ fun AppNav() {
         // 关键：appBackdrop 只录制这一独立层级，绝不包裹 AnimatedContent——
         // 否则各页面内部的 layerBackdrop 背景层会被嵌套录进 appBackdrop，
         // 形成「appBackdrop 录制页面 → 页面内部 layerBackdrop 又采样自身」的
-        // 自引用递归，渲染树递归过深而栈溢出崩溃（进入单词表时尤为明显）。
+        // 自引用递归，渲染树递归过深而崩溃（进入单词表时尤为明显）。
         // 底栏 / 弹窗统一采样本固定背景，呈现液态玻璃折射。
         Box(
             modifier = Modifier
@@ -498,60 +507,77 @@ fun AppNav() {
             }
         }
 
-        // 全局更新弹窗（液态玻璃）
-        if (showUpdateDialog && latestVersion != null) {
-            val v = latestVersion!!
-            LiquidGlassDialog(
-                backdrop = appBackdrop,
-                onDismissRequest = { showUpdateDialog = false },
-            ) {
-                Text(
-                    "发现新版本 v${v.latestVersion}",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.height(12.dp))
-                GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
-                Spacer(Modifier.height(20.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("稍后再说")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { openDownload() }) {
-                        Text("立即下载")
-                    }
-                }
-            }
-        }
-
-        // 全局公告弹窗（液态玻璃）
-        if (showNoticeDialog && latestNotice != null) {
-            val n = latestNotice!!
-            LiquidGlassDialog(
-                backdrop = appBackdrop,
-                onDismissRequest = { showNoticeDialog = false },
-            ) {
-                Text(
-                    n.title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                Spacer(Modifier.height(12.dp))
-                GlassDialogBody(n.content)
-                Spacer(Modifier.height(20.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { showNoticeDialog = false }) {
-                        Text("知道了")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    if (n.url.isNotBlank()) {
-                        TextButton(onClick = { openNoticeUrl() }) {
-                            Text(n.btnText.ifBlank { "查看详情" })
+        // 全局更新与公告共用同一个活跃弹窗
+        when (val dialog = activeDialog) {
+            is GlobalDialogState.Update -> {
+                val v = dialog.version
+                val force = v.forceUpdate
+                LiquidGlassDialog(
+                    backdrop = appBackdrop,
+                    onDismissRequest = { if (!force) closeActiveDialog() },
+                    dismissOnClickOutside = !force,
+                    dismissLocked = force,
+                ) {
+                    Text(
+                        "发现新版本 v${v.latestVersion}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
+                    Spacer(Modifier.height(20.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        if (!force) {
+                            TextButton(onClick = { closeActiveDialog() }) {
+                                Text("稍后再说")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        TextButton(onClick = { openDownload() }) {
+                            Text("立即下载")
                         }
                     }
                 }
             }
+
+            is GlobalDialogState.Notice -> {
+                val n = dialog.notice
+                val force = n.isForce
+                LiquidGlassDialog(
+                    backdrop = appBackdrop,
+                    onDismissRequest = { if (!force) closeActiveDialog() },
+                    dismissOnClickOutside = !force,
+                    dismissLocked = force,
+                ) {
+                    Text(
+                        n.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    GlassDialogBody(n.content)
+                    Spacer(Modifier.height(20.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        if (!force) {
+                            TextButton(onClick = { closeActiveDialog() }) {
+                                Text("知道了")
+                            }
+                        } else if (n.url.isBlank()) {
+                            TextButton(onClick = { closeActiveDialog() }) {
+                                Text("我知道了")
+                            }
+                        }
+                        if (n.url.isNotBlank()) {
+                            if (!force) Spacer(Modifier.width(8.dp))
+                            TextButton(onClick = { openNoticeUrl() }) {
+                                Text(n.btnText.ifBlank { "查看详情" })
+                            }
+                        }
+                    }
+                }
+            }
+
+            null -> Unit
         }
     }
 }

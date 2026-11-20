@@ -95,6 +95,7 @@ import com.ssjq.english.ui.common.GlassDialogBody
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.ui.common.LiquidGlassListItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
@@ -121,27 +122,38 @@ fun AboutScreen(onBack: () -> Unit) {
     var noticeError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
-        currentVersion = AppUpdateManager.getCurrentVersionName(context)
+        try {
+            currentVersion = AppUpdateManager.getCurrentVersionName(context)
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Toast.makeText(context, "版本信息读取失败", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun checkUpdate() {
         scope.launch {
             checkingUpdate = true
             updateError = null
-            val (version, result) = AppUpdateManager.checkUpdate(context)
-            when (result) {
-                UpdateResult.NEW_VERSION_AVAILABLE -> {
-                    latestVersion = version
-                    showUpdateDialog = true
+            try {
+                val (version, result) = AppUpdateManager.checkUpdate(context)
+                when (result) {
+                    UpdateResult.NEW_VERSION_AVAILABLE -> {
+                        latestVersion = version
+                        showUpdateDialog = true
+                    }
+                    UpdateResult.NO_UPDATE -> {
+                        updateError = "当前已是最新版本"
+                    }
+                    UpdateResult.NETWORK_ERROR -> {
+                        updateError = "检查更新失败，请检查网络"
+                    }
                 }
-                UpdateResult.NO_UPDATE -> {
-                    updateError = "当前已是最新版本"
-                }
-                UpdateResult.NETWORK_ERROR -> {
-                    updateError = "检查更新失败，请检查网络"
-                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                updateError = "检查更新失败，请稍后重试"
+            } finally {
+                checkingUpdate = false
             }
-            checkingUpdate = false
         }
     }
 
@@ -150,28 +162,36 @@ fun AboutScreen(onBack: () -> Unit) {
         scope.launch {
             loadingNotice = true
             noticeError = null
-            val (notice, result) = AppUpdateManager.fetchNotice()
-            when (result) {
-                NoticeResult.HAS_NOTICE -> {
-                    // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
-                    if (notice != null && notice.hasContent()) {
-                        latestNotice = notice
-                        showNoticeDialog = true
-                    } else {
-                        noticeError = "暂无公告"
+            try {
+                val (notice, result) = AppUpdateManager.fetchNotice()
+                when (result) {
+                    NoticeResult.HAS_NOTICE -> {
+                        // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
+                        if (notice != null && notice.hasContent()) {
+                            latestNotice = notice
+                            showNoticeDialog = true
+                        } else {
+                            noticeError = "暂无公告"
+                        }
                     }
+                    NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
+                    NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
                 }
-                NoticeResult.NO_NOTICE -> noticeError = "暂无公告"
-                NoticeResult.NETWORK_ERROR -> noticeError = "拉取公告失败，请检查网络"
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                noticeError = "拉取公告失败，请稍后重试"
+            } finally {
+                loadingNotice = false
             }
-            loadingNotice = false
         }
     }
 
     fun openNoticeUrl(url: String) {
         if (!AppUpdateManager.openUrl(context, url)) {
             Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
+            return
         }
+        showNoticeDialog = false
     }
 
     fun openEditUsername() {
@@ -537,9 +557,12 @@ fun AboutScreen(onBack: () -> Unit) {
     // 更新弹窗（液态玻璃）
     if (showUpdateDialog && latestVersion != null) {
         val v = latestVersion!!
+        val force = v.forceUpdate
         LiquidGlassDialog(
             backdrop = liquidBackdrop,
-            onDismissRequest = { showUpdateDialog = false },
+            onDismissRequest = { if (!force) showUpdateDialog = false },
+            dismissOnClickOutside = !force,
+            dismissLocked = force,
         ) {
             Text(
                 "发现新版本 v${v.latestVersion}",
@@ -553,10 +576,12 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                TextButton(onClick = { showUpdateDialog = false }) {
-                    Text("稍后再说")
+                if (!force) {
+                    TextButton(onClick = { showUpdateDialog = false }) {
+                        Text("稍后再说")
+                    }
+                    Spacer(Modifier.width(8.dp))
                 }
-                Spacer(Modifier.width(8.dp))
                 TextButton(onClick = { handleUpdateClick() }) {
                     Text("立即更新")
                 }
@@ -615,9 +640,12 @@ fun AboutScreen(onBack: () -> Unit) {
     // 最新公告：液态玻璃对话框（与版本号无关，可直接拉取）
     if (showNoticeDialog && latestNotice != null) {
         val n = latestNotice!!
+        val force = n.isForce
         LiquidGlassDialog(
             backdrop = liquidBackdrop,
-            onDismissRequest = { showNoticeDialog = false },
+            onDismissRequest = { if (!force) showNoticeDialog = false },
+            dismissOnClickOutside = !force,
+            dismissLocked = force,
         ) {
             Text(
                 n.title,
@@ -631,11 +659,17 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                TextButton(onClick = { showNoticeDialog = false }) {
-                    Text("知道了")
+                if (!force) {
+                    TextButton(onClick = { showNoticeDialog = false }) {
+                        Text("知道了")
+                    }
+                } else if (n.url.isBlank()) {
+                    TextButton(onClick = { showNoticeDialog = false }) {
+                        Text("我知道了")
+                    }
                 }
                 if (n.url.isNotBlank()) {
-                    Spacer(Modifier.width(8.dp))
+                    if (!force) Spacer(Modifier.width(8.dp))
                     TextButton(onClick = { openNoticeUrl(n.url) }) {
                         Text(n.btnText.ifBlank { "查看详情" })
                     }

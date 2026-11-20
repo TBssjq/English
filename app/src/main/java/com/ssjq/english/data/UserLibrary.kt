@@ -40,6 +40,31 @@ object UserLibrary {
         if (appContext == null) appContext = context.applicationContext
     }
 
+    /**
+     * 升级或导入遗留数据后，清理 SharedPreferences 里已经损坏的词单与分类顺序。
+     * 由应用入口在 IO 线程调用，避免启动阶段在主线程解析 JSON。
+     */
+    fun repairStoredLists() {
+        listOf(KEY_WRONG, KEY_FAVORITE).forEach { key ->
+            val raw = prefs.getString(key, null) ?: return@forEach
+            val parsed = runCatching { parseList(raw) }.getOrNull()
+            if (parsed == null) {
+                writeList(key, emptyList())
+                return@forEach
+            }
+            val originalCount = JSONArray(raw).length()
+            if (parsed.size != originalCount) {
+                writeList(key, parsed)
+            } else {
+                setCachedList(key, parsed)
+            }
+        }
+        val orderRaw = prefs.getString(KEY_CATEGORY_ORDER, null) ?: return
+        if (runCatching { JSONArray(orderRaw) }.isFailure) {
+            prefs.edit { remove(KEY_CATEGORY_ORDER) }
+        }
+    }
+
     /** 供 data 层其他单例复用同一个 application Context */
     internal fun applicationContext(): Context =
         checkNotNull(appContext) { "UserLibrary 未初始化，请先调用 init(context)" }
@@ -124,8 +149,12 @@ object UserLibrary {
      */
     fun categoryOrder(): List<String> {
         val json = prefs.getString(KEY_CATEGORY_ORDER, null) ?: return emptyList()
-        val arr = JSONArray(json)
-        return List(arr.length()) { arr.getString(it) }
+        return runCatching {
+            val arr = JSONArray(json)
+            List(arr.length()) { arr.optString(it) }
+                .filter { it.isNotBlank() }
+                .distinct()
+        }.getOrDefault(emptyList())
     }
 
     /** 保存主页分类顺序 */
@@ -227,27 +256,23 @@ object UserLibrary {
     // ---------- 持久化 ----------
 
     /**
-     * 解析词单。字段缺失或格式错误就地抛出，避免写操作基于残缺数据覆盖原文件。
+     * 解析词单。逐条校验并去重，损坏条目不会让整份词单无法读取。
+     * [repairStoredLists] 会把清理后的结果写回 SharedPreferences。
      */
-    private fun readListSafe(key: String): List<WordEntry> {
-        cachedList(key)?.let { return it }
-        val raw = prefs.getString(key, null)
-        if (raw == null) {
-            setCachedList(key, emptyList())
-            return emptyList()
-        }
+    private fun parseList(raw: String): List<WordEntry> {
         val arr = JSONArray(raw)
         val list = ArrayList<WordEntry>(arr.length())
+        val seen = HashSet<String>(arr.length())
         for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
+            val o = arr.optJSONObject(i) ?: continue
             val wordId = o.optString("wordId")
             val dbName = canonicalDb(o.optString("dbName"))
-            // 缺主键的条目跳过：其余记录仍要能正常读出
             if (wordId.isBlank() || dbName.isBlank()) continue
+            val key = "$wordId#$dbName"
+            if (!seen.add(key)) continue
             list.add(
                 WordEntry(
                     wordId = wordId,
-                    // 早期记录可能没有词头与时间，缺失时退化为空串与 0，不影响按 wordId 打开
                     headWord = o.optString("headWord"),
                     dbName = dbName,
                     tranCn = o.optString("tranCn").takeIf { it.isNotBlank() },
@@ -255,6 +280,19 @@ object UserLibrary {
                 )
             )
         }
+        return list
+    }
+
+    private fun readListSafe(key: String): List<WordEntry> {
+        cachedList(key)?.let { return it }
+        val raw = prefs.getString(key, null)
+        if (raw == null) {
+            setCachedList(key, emptyList())
+            return emptyList()
+        }
+        // 数据文件由 repairStoredLists 在启动时清理；此处仍隔离解析异常，
+        // 防止外部写入的残缺 JSON 沿 LaunchedEffect 冒到界面。
+        val list = runCatching { parseList(raw) }.getOrDefault(emptyList())
         return list.also { setCachedList(key, it) }
     }
 
@@ -286,8 +324,11 @@ object UserLibrary {
     internal fun readList(key: String): List<WordEntry> = readListSafe(key)
 
     internal fun writeList(key: String, list: List<WordEntry>) {
+        val normalized = list
+            .map { it.copy(dbName = canonicalDb(it.dbName)) }
+            .distinctBy { "${it.wordId}#${it.dbName}" }
         val arr = JSONArray()
-        list.forEach { e ->
+        normalized.forEach { e ->
             arr.put(JSONObject().apply {
                 put("wordId", e.wordId)
                 put("headWord", e.headWord)
@@ -297,6 +338,6 @@ object UserLibrary {
             })
         }
         prefs.edit { putString(key, arr.toString()) }
-        setCachedList(key, list)
+        setCachedList(key, normalized)
     }
 }

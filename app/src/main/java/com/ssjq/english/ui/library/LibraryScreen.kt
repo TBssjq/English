@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -103,11 +103,19 @@ fun LibraryScreen(
     // 跨词库测验的错题分散在多本词库里，默认只看当前词库，可切换为全部
     var showAllDbs by remember { mutableStateOf(initialShowAll) }
     var entries by remember(dbName, type, showAllDbs) { mutableStateOf<List<WordEntry>>(emptyList()) }
+    var loadError by remember(dbName, type, showAllDbs) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     suspend fun reloadEntries() {
-        val data = withContext(Dispatchers.IO) { loadEntries(dbName, type, showAllDbs) }
-        entries = data
+        val result = withContext(Dispatchers.IO) {
+            runCatching { loadEntries(dbName, type, showAllDbs) }
+                .fold(
+                    onSuccess = { it to null },
+                    onFailure = { emptyList<WordEntry>() to "词单读取失败，已按空列表显示" },
+                )
+        }
+        entries = result.first
+        loadError = result.second
     }
     LaunchedEffect(dbName, type, showAllDbs) { reloadEntries() }
 
@@ -146,7 +154,7 @@ fun LibraryScreen(
         if (entries.isEmpty()) {
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
                 Text(
-                    when {
+                    loadError ?: when {
                         showAllDbs && type == LibraryType.WRONG -> "所有词库都还没有错题"
                         showAllDbs -> "所有词库都还没有收藏"
                         type == LibraryType.WRONG -> "当前词库暂无错题，点右上角切换为「全部词库」"
@@ -162,8 +170,8 @@ fun LibraryScreen(
                 modifier = Modifier.padding(padding).fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // 不同词库可能存在相同 word_id，key 必须带词库名
-                items(entries, key = { "${it.dbName}-${it.wordId}" }) { entry ->
+                // 不同词库可能存在相同 word_id，key 同时带词库名与序号
+                itemsIndexed(entries, key = { index, entry -> "$index-${entry.dbName}-${entry.wordId}" }) { _, entry ->
                     LibraryRow(
                         entry = entry,
                         type = type,

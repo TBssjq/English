@@ -2,7 +2,7 @@
 
 一款基于 **Jetpack Compose** 与 **液态玻璃（Liquid Glass）** 视觉风格的 Android 英语单词学习应用。内置 81 个离线词库，提供词卡学习、多种测验模式、疯狂刷题、打卡成就、错题本/收藏夹与数据导入导出。
 
-> 应用名：English ｜ 包名：`com.ssjq.english` ｜ 当前版本：2.2
+> 应用名：English ｜ 包名：`com.ssjq.english` ｜ 当前版本：2.4
 
 ---
 
@@ -37,7 +37,7 @@
 
 ---
 
-## 技术栈
+## 使用的技术
 
 | 项目 | 版本 / 说明 |
 |---|---|
@@ -63,7 +63,7 @@ app/src/
 │  │  ├─ quiz/                测验引擎与界面（出题 / 答题 / 反馈 / 成绩）
 │  │  ├─ service/             发音播放器
 │  │  └─ ui/
-│  │     ├─ AppNav.kt         导航（顶层页签 + 二级页面栈）
+│  │     ├─ AppNav.kt         导航（顶层页签 + 二级页面列表）
 │  │     ├─ home/             首页
 │  │     ├─ wordlist/         词库列表
 │  │     ├─ worddetail/       单词详情 / 背诵
@@ -94,9 +94,14 @@ app/src/
 # 单元测试
 .\gradlew.bat :app:testDebugUnitTest
 
+# 模拟器 instrumentation 测试
+.\gradlew.bat :app:connectedDebugAndroidTest
+
 # 完整验证（含 R8 混淆）
 .\gradlew.bat :app:assembleDebug :app:assembleRelease
 ```
+
+> 设备序列号包含冒号时，AGP 9.4.1 会把全部通过的 `connectedDebugAndroidTest` 误判为失败。可改用 `emulator-5554` 之类无冒号序列号的本地模拟器，或执行 `adb shell am instrument -r -w com.ssjq.english.test/androidx.test.runner.AndroidJUnitRunner` 直接读取 `OK (5 tests)` 结果。
 
 > ⚠️ **不要改动的东西**：backdrop 库为**源码集成**，请勿换回 Maven 依赖；相关版本约束与踩坑记录见 [`TODO.md`](./TODO.md) 的「技术约束」章节。改动玻璃相关代码后务必跑 release，确认 R8 未误删 backdrop 类。
 

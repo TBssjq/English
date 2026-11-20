@@ -117,10 +117,10 @@ object CheckInManager {
     fun allRecords(): List<CheckInRecord> {
         ensureInit()
         val raw = prefs.getString(KEY_RECORDS, null) ?: return emptyList()
-        val arr = JSONArray(raw)
-        // 缺日期的条目直接跳过：一条坏数据不该让整份打卡记录不可用
+        val arr = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+        // 缺日期或结构损坏的条目直接跳过：一条坏数据不该让整份打卡记录不可用
         return (0 until arr.length()).mapNotNull { i ->
-            val o = arr.getJSONObject(i)
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
             val date = o.optString("date")
             if (date.isBlank()) return@mapNotNull null
             CheckInRecord(
@@ -241,7 +241,7 @@ object CheckInManager {
     /** 历史最长连续打卡天数 */
     private fun calcLongestStreak(records: List<CheckInRecord>): Int {
         val sorted = records
-            .map { LocalDate.parse(it.date) }
+            .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
             .distinct()
             .sorted()
         if (sorted.isEmpty()) return 0

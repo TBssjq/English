@@ -3,6 +3,7 @@
 package com.ssjq.english.ui.home
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -110,6 +111,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -196,7 +198,10 @@ fun HomeScreen(
 
     // 读取保存的分类顺序，用于对 catalog 排序。保存后通过 orderVersion 触发重读
     var orderVersion by remember { mutableStateOf(0) }
-    val savedOrder = remember(allDbs, orderVersion) { UserLibrary.categoryOrder() }
+    var savedOrder by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(allDbs, orderVersion) {
+        savedOrder = withContext(Dispatchers.IO) { UserLibrary.categoryOrder() }
+    }
 
     // 打卡统计：stats() 要解析 SP 里的 JSON，较重，放到 IO 线程；
     // 并在从打卡/学习页返回主页时刷新（学习行为会触发自动打卡）
@@ -210,15 +215,20 @@ fun HomeScreen(
     var favoriteTotal by remember { mutableStateOf(0) }
     fun refreshCheckInStats() {
         homeScope.launch {
-            // IO 线程只负责取值，状态回到主线程赋值
-            val snapshot = withContext(Dispatchers.IO) {
-                val book = UserManager.getCurrentBook()
-                val due = if (book != null) ReviewScheduler.dueWordIds(book) else emptyList()
-                Triple(
-                    CheckInManager.stats(),
-                    due,
-                    UserLibrary.allWrongWords().size to UserLibrary.allFavorites().size,
-                )
+            val snapshot = runCatching {
+                withContext(Dispatchers.IO) {
+                    val book = UserManager.getCurrentBook()
+                    val due = if (book != null) ReviewScheduler.dueWordIds(book) else emptyList()
+                    Triple(
+                        CheckInManager.stats(),
+                        due,
+                        UserLibrary.allWrongWords().size to UserLibrary.allFavorites().size,
+                    )
+                }
+            }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                Toast.makeText(context, "学习数据读取失败", Toast.LENGTH_SHORT).show()
+                return@launch
             }
             checkInStats = snapshot.first
             dueReviewIds = snapshot.second
@@ -267,12 +277,19 @@ fun HomeScreen(
             return@LaunchedEffect
         }
         wordSearchLoading = true
-        // 轻微延迟去抖
-        kotlinx.coroutines.delay(200)
-        wordSearchResults = withContext(Dispatchers.IO) {
-            DatabaseManager.searchAllDbs(context, allDbs, filter, limitPerDb = 8)
+        try {
+            // 轻微延迟去抖
+            kotlinx.coroutines.delay(200)
+            wordSearchResults = withContext(Dispatchers.IO) {
+                DatabaseManager.searchAllDbs(context, allDbs, filter, limitPerDb = 8)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            wordSearchResults = emptyList()
+            Toast.makeText(context, "搜索失败，请稍后重试", Toast.LENGTH_SHORT).show()
+        } finally {
+            wordSearchLoading = false
         }
-        wordSearchLoading = false
     }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
@@ -382,9 +399,9 @@ fun HomeScreen(
                 if (showEntryCards) item {
                     // lambda 必须稳定：LiquidToggle 内部以 selected 为 LaunchedEffect 的 key，
                     // 每次重组新建 lambda 会导致内部状态/动画被反复重置
-                    val toggleSelected = remember { { darkThemeMode == true } }
+                    val toggleSelected = remember(darkThemeMode) { { darkThemeMode == true } }
                     val toggleOnSelect = remember { { v: Boolean -> UserManager.setDarkThemeMode(v) } }
-                    val glassToggleSelected = remember { { glassEffect } }
+                    val glassToggleSelected = remember(glassEffect) { { glassEffect } }
                     val glassToggleOnSelect = remember {
                         { v: Boolean ->
                             UserManager.setGlassEffectEnabled(v)
