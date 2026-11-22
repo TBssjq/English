@@ -73,7 +73,9 @@ fun BackdropEffectScope.exposureAdjustment(ev: Float) {
 fun BackdropEffectScope.gammaAdjustment(power: Float) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
 
-    val shader = obtainRuntimeShader("GammaAdjustment", GammaAdjustmentShaderString).apply {
+    // 着色器编译失败时 obtainRuntimeShader 返回 null：直接跳过该效果，不能让异常外泄
+    val shader = obtainRuntimeShader("GammaAdjustment", GammaAdjustmentShaderString) ?: return
+    shader.apply {
         setFloatUniform("power", power)
     }
     effect(RenderEffect.createRuntimeShaderEffect(shader, "content"))

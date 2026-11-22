@@ -334,6 +334,14 @@ fun AppNav() {
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.secondary.copy(alpha = blobAlphas[2])),
             )
+            Box(
+                Modifier
+                    .size(GlassBackdropSpec.blobSizes[3])
+                    .align(Alignment.BottomEnd)
+                    .offset(x = (-60).dp, y = 120.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = blobAlphas[3])),
+            )
         }
 
         // 内容区：所有页面共用同一个背景采样层，各页面不再各自录制全屏背景。
@@ -344,7 +352,13 @@ fun AppNav() {
             // 顶层页面为悬浮式底部导航栏预留空间，避免内容被遮挡
             modifier = Modifier
                 .fillMaxSize()
-                .then(if (isTopLevel) Modifier.padding(bottom = 88.dp) else Modifier),
+                .then(
+                    if (isTopLevel && !GlassDialogHost.isDialogVisible) {
+                        Modifier.padding(bottom = 88.dp)
+                    } else {
+                        Modifier
+                    }
+                ),
             // 方向映射自 android/nav3-recipes 的 animations 示例：
             // 前进从右进、旧页向左；返回从左进、旧页向右；页签切换用淡入淡出加轻微缩放。
             transitionSpec = {
@@ -401,7 +415,15 @@ fun AppNav() {
             // 返回箭头改为切回「学习」页签
             is CheckInRoute -> CheckInScreen(onBack = { selectTab(MainTab.STUDY) })
 
-            is AboutRoute -> AboutScreen(onBack = { selectTab(MainTab.STUDY) })
+            is AboutRoute -> AboutScreen(
+                onBack = { selectTab(MainTab.STUDY) },
+                onShowUpdate = { version ->
+                    dialogQueue = dialogQueue + GlobalDialogState.Update(version)
+                },
+                onShowNotice = { notice ->
+                    dialogQueue = dialogQueue + GlobalDialogState.Notice(notice)
+                },
+            )
 
             is WordListRoute -> WordListScreen(
                 dbName = route.dbName,
@@ -480,10 +502,11 @@ fun AppNav() {
                     .navigationBarsPadding()
                     .padding(bottom = 8.dp),
             ) {
-                // 这两个 lambda 必须保持引用稳定：LiquidBottomTabs 内部把它们作为
-                // remember 的 key，若每次重组都新建实例，会导致内部指示器状态被反复重置。
-                // selectedTabIndex 仅在 currentTab 真正变化时重建，onTabSelected 永久稳定。
-                val selectedIndexLambda = remember(currentTab) { { currentTab.ordinal } }
+                // 两个 lambda 都保持永久稳定：LiquidBottomTabs 用 snapshotFlow 观察
+                // selectedTabIndex()，lambda 实例固定时内部同步逻辑才能持续工作。
+                // currentTab 是可观察的 State，lambda 内部读取时自动订阅快照变化，
+                // 因此不需要以 currentTab 作为 remember 的 key。
+                val selectedIndexLambda = remember { { currentTab.ordinal } }
                 val onTabSelectedStable = remember { { index: Int -> selectTab(MainTab.entries[index]) } }
                 LiquidBottomTabs(
                     selectedTabIndex = selectedIndexLambda,
@@ -511,12 +534,9 @@ fun AppNav() {
         when (val dialog = activeDialog) {
             is GlobalDialogState.Update -> {
                 val v = dialog.version
-                val force = v.forceUpdate
                 LiquidGlassDialog(
                     backdrop = appBackdrop,
-                    onDismissRequest = { if (!force) closeActiveDialog() },
-                    dismissOnClickOutside = !force,
-                    dismissLocked = force,
+                    onDismissRequest = { closeActiveDialog() },
                 ) {
                     Text(
                         "发现新版本 v${v.latestVersion}",
@@ -527,12 +547,10 @@ fun AppNav() {
                     GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
                     Spacer(Modifier.height(20.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        if (!force) {
-                            TextButton(onClick = { closeActiveDialog() }) {
-                                Text("稍后再说")
-                            }
-                            Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { closeActiveDialog() }) {
+                            Text("稍后再说")
                         }
+                        Spacer(Modifier.width(8.dp))
                         TextButton(onClick = { openDownload() }) {
                             Text("立即下载")
                         }
@@ -542,12 +560,9 @@ fun AppNav() {
 
             is GlobalDialogState.Notice -> {
                 val n = dialog.notice
-                val force = n.isForce
                 LiquidGlassDialog(
                     backdrop = appBackdrop,
-                    onDismissRequest = { if (!force) closeActiveDialog() },
-                    dismissOnClickOutside = !force,
-                    dismissLocked = force,
+                    onDismissRequest = { closeActiveDialog() },
                 ) {
                     Text(
                         n.title,
@@ -558,17 +573,11 @@ fun AppNav() {
                     GlassDialogBody(n.content)
                     Spacer(Modifier.height(20.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        if (!force) {
-                            TextButton(onClick = { closeActiveDialog() }) {
-                                Text("知道了")
-                            }
-                        } else if (n.url.isBlank()) {
-                            TextButton(onClick = { closeActiveDialog() }) {
-                                Text("我知道了")
-                            }
+                        TextButton(onClick = { closeActiveDialog() }) {
+                            Text("知道了")
                         }
                         if (n.url.isNotBlank()) {
-                            if (!force) Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(8.dp))
                             TextButton(onClick = { openNoticeUrl() }) {
                                 Text(n.btnText.ifBlank { "查看详情" })
                             }

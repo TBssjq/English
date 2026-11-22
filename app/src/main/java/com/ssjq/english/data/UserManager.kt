@@ -115,6 +115,10 @@ object UserManager {
         _glassEffectFlow.value = enabled
     }
 
+    /** 当前版本是否已做过升级处理（只读判断，不落标记） */
+    fun isVersionChecked(versionCode: Long): Boolean =
+        prefs.getLong(KEY_LAST_VERSION_CODE, 0L) == versionCode
+
     /**
      * 记录当前运行的版本号，返回 true 表示这是升级后的第一次启动。
      * 调用方据此刷新由 assets 派生、但不受版本约束的缓存。
@@ -137,24 +141,36 @@ object UserManager {
         prefs.edit { putInt(KEY_DAILY_GOAL, goal) }
     }
 
+    /** 旧键：早期版本用 lastStudyDb 记录学习词库，新版本以 currentBook 为准 */
     fun getLastStudyDb(): String? = prefs.getString(KEY_LAST_STUDY_DB, null)
+        ?.removeSuffix(".db")
 
     fun setLastStudyDb(dbName: String) {
-        prefs.edit { putString(KEY_LAST_STUDY_DB, dbName) }
+        val name = dbName.removeSuffix(".db")
+        prefs.edit { putString(KEY_LAST_STUDY_DB, name) }
     }
 
     /**
-     * 当前选定的学习词库（注册时选择，之后可随时更换）。
-     * 返回 null 表示尚未选择（老用户升级后即为该情况，此时沿用旧的完整列表）。
+     * 当前选定的学习词库。老版本只写过 lastStudyDb，升级后读取时兼容一次。
+     * 返回 null 表示用户尚未选择词库。
      */
-    fun getCurrentBook(): String? = prefs.getString(KEY_CURRENT_BOOK, null)
+    fun getCurrentBook(): String? =
+        prefs.getString(KEY_CURRENT_BOOK, null)?.removeSuffix(".db")
+            ?: getLastStudyDb()
 
     fun setCurrentBook(dbName: String) {
-        prefs.edit { putString(KEY_CURRENT_BOOK, dbName) }
+        val name = dbName.removeSuffix(".db")
+        prefs.edit {
+            putString(KEY_CURRENT_BOOK, name)
+            putString(KEY_LAST_STUDY_DB, name)
+        }
     }
 
     fun clearCurrentBook() {
-        prefs.edit { remove(KEY_CURRENT_BOOK) }
+        prefs.edit {
+            remove(KEY_CURRENT_BOOK)
+            remove(KEY_LAST_STUDY_DB)
+        }
     }
 
     /** 解析刷题记录数组；损坏内容按空数组处理 */

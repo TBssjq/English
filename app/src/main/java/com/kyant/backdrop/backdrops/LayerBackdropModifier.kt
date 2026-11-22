@@ -22,8 +22,10 @@ private class LayerBackdropElement(
     }
 
     override fun update(node: LayerBackdropNode) {
-        node.backdrop = backdrop
-        backdrop.invalidateBackground()
+        if (node.backdrop != backdrop) {
+            node.backdrop.layerCoordinates = null
+            node.backdrop = backdrop
+        }
         node.invalidateDraw()
     }
 
@@ -45,41 +47,18 @@ private class LayerBackdropNode(
     var backdrop: LayerBackdrop
 ) : DrawModifierNode, GlobalPositionAwareModifierNode, Modifier.Node() {
 
-    override val shouldAutoInvalidate: Boolean = false
-
-    private var lastWidth = -1
-    private var lastHeight = -1
-
     override fun ContentDrawScope.draw() {
         drawContent()
-        // 背景是静态渐变与光斑，仅在尺寸、主题或内容参数变化时重新录制
-        if (backdrop.backgroundDirty) {
-            recordLayer(backdrop.graphicsLayer) { backdrop.onDraw(this@draw) }
-            backdrop.backgroundDirty = false
-        }
+        recordLayer(backdrop.graphicsLayer) { backdrop.onDraw(this@draw) }
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
-        if (!coordinates.isAttached) return
-        val size = coordinates.size
-        if (size.width != lastWidth || size.height != lastHeight) {
-            lastWidth = size.width
-            lastHeight = size.height
-            backdrop.invalidateBackground()
-            invalidateDraw()
+        if (coordinates.isAttached) {
+            backdrop.layerCoordinates = coordinates
         }
-        backdrop.layerCoordinates = coordinates
-    }
-
-    override fun onAttach() {
-        backdrop.requestRedraw = { invalidateDraw() }
-        backdrop.invalidateBackground()
-        lastWidth = -1
-        lastHeight = -1
     }
 
     override fun onDetach() {
         backdrop.layerCoordinates = null
-        backdrop.requestRedraw = null
     }
 }

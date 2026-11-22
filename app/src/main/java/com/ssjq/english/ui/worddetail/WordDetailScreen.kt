@@ -89,6 +89,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.buildAnnotatedString
@@ -311,6 +314,30 @@ fun WordDetailScreen(
     var showSpellPanel by remember { mutableStateOf(false) }
     var spellInput by remember { mutableStateOf("") }
     var spellResult by remember { mutableStateOf<Boolean?>(null) }
+
+    val panelScrollConnection = remember(canSwipe, revealed) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (canSwipe && revealed && source == NestedScrollSource.UserInput) {
+                    val delta = consumed.y + available.y
+                    if (delta < -24f) {
+                        showSpellPanel = false
+                        showExamplePanel = true
+                    } else if (delta > 24f) {
+                        showExamplePanel = false
+                        showSpellPanel = true
+                        spellInput = ""
+                        spellResult = null
+                    }
+                }
+                return Offset.Zero
+            }
+        }
+    }
 
     // 获取所有词库列表
     var allDbs by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -814,6 +841,7 @@ fun WordDetailScreen(
                                 // 背面：完整释义 / 短语 / 例句 / 记忆法 / 同反义词 / 派生词
                                 Column(
                                     modifier = Modifier.fillMaxSize().padding(20.dp)
+                                        .nestedScroll(panelScrollConnection)
                                         .verticalScroll(rememberScrollState()),
                                 ) {
                                     // 标题行：单词 + 难度星级
@@ -1496,9 +1524,12 @@ private fun ClickableWordText(
             detectTapGestures { offsetPosition ->
                 val layoutResult = textLayoutResult.value ?: return@detectTapGestures
                 val offset = layoutResult.getOffsetForPosition(offsetPosition)
-                annotatedString.getStringAnnotations("WORD", offset, offset).firstOrNull()?.let {
-                    onWordClick(it.item)
-                }
+                val words = annotatedString.getStringAnnotations("WORD", 0, annotatedString.length)
+                words.firstOrNull { offset in it.start..it.end }
+                    ?: words.minByOrNull {
+                        minOf(kotlin.math.abs(offset - it.start), kotlin.math.abs(offset - it.end))
+                    }
+                    ?.let { onWordClick(it.item) }
             }
         },
         style = MaterialTheme.typography.bodyMedium,

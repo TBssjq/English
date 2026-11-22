@@ -59,6 +59,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
@@ -79,6 +80,7 @@ import com.ssjq.english.data.LibraryCatalog
 import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.UserManager
 import com.ssjq.english.data.WordDetail
+import com.ssjq.english.data.WordSource
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassCard
 import com.ssjq.english.ui.common.LiquidGlassListItem
@@ -90,12 +92,12 @@ import kotlinx.coroutines.withContext
 private fun crazyQuizSourceKey(source: CrazyQuizSource, dbName: String?): String = when (source) {
     CrazyQuizSource.WRONG -> "crazy|wrong"
     CrazyQuizSource.FAVORITE -> "crazy|favorite"
-    CrazyQuizSource.LIBRARY -> "crazy|library|${dbName?.removeSuffix(".db").orEmpty()}"
+    CrazyQuizSource.LIBRARY -> "crazy|library|${WordSource.canonicalDb(dbName)}"
 }
 
 /** 词库名与单词编号共同标识题源，避免不同词库相同 word_id 互相覆盖 */
 private fun wordSourceId(dbName: String, wordId: String): String =
-    "${dbName.removeSuffix(".db")}#$wordId"
+    WordSource.id(dbName, wordId)
 
 /** 读取同一题源、同一题量上次的题序，退出后按原词序恢复 */
 private fun savedQuizSourceIds(sourceKey: String, count: Int): List<String> {
@@ -109,7 +111,10 @@ private fun savedQuizSourceIds(sourceKey: String, count: Int): List<String> {
     if (obj.optString("sourceKey") != sourceKey) return emptyList()
     if (obj.optInt("requestedCount", 0) != count) return emptyList()
     val array = obj.optJSONArray("sourceIds") ?: return emptyList()
-    return (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
+    return (0 until array.length())
+        .map { array.optString(it) }
+        .filter { it.isNotBlank() }
+        .map(WordSource::canonicalSourceId)
 }
 
 @Composable
@@ -125,7 +130,8 @@ fun CrazyQuizScreen(
     val context = LocalContext.current
     var selectedSource by remember { mutableStateOf<CrazyQuizSource?>(null) }
     var selectedDb by remember { mutableStateOf<String?>(null) }
-    val lastStudyDb = remember { UserManager.getLastStudyDb() }
+    // 当前学习词库与疯狂刷题共用同一个题库来源；旧版本只有 lastStudyDb 时由 UserManager 兼容
+    val lastStudyDb = remember { UserManager.getCurrentBook() }
     var allDbs by remember { mutableStateOf<List<String>>(emptyList()) }
     var wrongCount by remember { mutableStateOf(0) }
     var favoriteCount by remember { mutableStateOf(0) }
@@ -182,8 +188,9 @@ fun CrazyQuizScreen(
                 CrazyQuizSource.WRONG -> {
                     val all = UserLibrary.allWrongWords()
                     val byId = all.associateBy { wordSourceId(it.dbName, it.wordId) }
+                    val byWordId = all.associateBy { it.wordId }
                     if (savedIds.isNotEmpty()) {
-                        savedIds.mapNotNull { byId[it] }.take(quizCount)
+                        savedIds.mapNotNull { byId[it] ?: byWordId[it] }.take(quizCount)
                             .mapNotNull { loadEntryDetail(context, it) }
                     } else {
                         all.shuffled().take(quizCount)
@@ -193,8 +200,9 @@ fun CrazyQuizScreen(
                 CrazyQuizSource.FAVORITE -> {
                     val all = UserLibrary.allFavorites()
                     val byId = all.associateBy { wordSourceId(it.dbName, it.wordId) }
+                    val byWordId = all.associateBy { it.wordId }
                     if (savedIds.isNotEmpty()) {
-                        savedIds.mapNotNull { byId[it] }.take(quizCount)
+                        savedIds.mapNotNull { byId[it] ?: byWordId[it] }.take(quizCount)
                             .mapNotNull { loadEntryDetail(context, it) }
                     } else {
                         all.shuffled().take(quizCount)
@@ -206,16 +214,18 @@ fun CrazyQuizScreen(
                     // openDatabase 需要带 .db 后缀的资产文件名，缺失时补上，
                     // 避免 FileNotFoundException
                     val dbName = if (raw.endsWith(".db")) raw else "$raw.db"
-                    val canonicalDb = dbName.removeSuffix(".db")
+                    val canonicalDb = WordSource.canonicalDb(dbName)
                     val db = DatabaseManager.openDatabase(context, dbName)
                     try {
                         if (savedIds.isNotEmpty()) {
                             savedIds.take(quizCount).mapNotNull { saved ->
-                                val wordId = saved.substringAfter('#')
-                                if (saved.substringBefore('#') == canonicalDb) {
-                                    DatabaseManager.getWordDetail(db, wordId, dbName)
-                                } else {
-                                    null
+                                val parsed = WordSource.parseId(saved)
+                                when {
+                                    parsed != null && parsed.first == canonicalDb ->
+                                        DatabaseManager.getWordDetail(db, parsed.second, dbName)
+                                    parsed == null ->
+                                        DatabaseManager.getWordDetail(db, saved, dbName)
+                                    else -> null
                                 }
                             }
                         } else {
@@ -388,9 +398,12 @@ fun CrazyQuizScreen(
                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                                     )
                                     Text(
-                                        lastStudyDb.removeSuffix(".db"),
+                                        // 原来直接显示 db 文件名（如 BeiShiGaoZhong_10），改为中文册名
+                                        LibraryCatalog.displayName(lastStudyDb),
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                     )
                                 }
                                 Icon(

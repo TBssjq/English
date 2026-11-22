@@ -74,9 +74,13 @@ import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.nav.LibraryType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.widget.Toast
+import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * 用户词单页：错题本 / 收藏夹共用。
@@ -105,6 +109,10 @@ fun LibraryScreen(
     var entries by remember(dbName, type, showAllDbs) { mutableStateOf<List<WordEntry>>(emptyList()) }
     var loadError by remember(dbName, type, showAllDbs) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    // 修复（界面 H-3）：删除错题/收藏原先点一下就立即执行且不可恢复，
+    // 误触即永久丢失学习记录。改为先弹二次确认，确认后才落盘。
+    var pendingDelete by remember { mutableStateOf<WordEntry?>(null) }
 
     suspend fun reloadEntries() {
         val result = withContext(Dispatchers.IO) {
@@ -124,6 +132,50 @@ fun LibraryScreen(
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     // 全应用共享的背景采样层
     val liquidBackdrop = LocalAppBackdrop.current
+
+    // 修复（界面 H-3）：删除前的二次确认；删除本身放 runCatching，
+    // 旧实现协程里未捕获的异常会直接抛到主线程导致闪退，
+    // 且失败时界面还会显示「已删除」的假象。
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text(if (type == LibraryType.WRONG) "移出错题本？" else "取消收藏？") },
+            text = {
+                Text(
+                    "「${target.headWord}」将从${if (type == LibraryType.WRONG) "错题本" else "收藏夹"}中移除，" +
+                        "此操作不可撤销。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                        scope.launch {
+                            val error = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    // 全部词库视图下必须按条目自身所属词库删除
+                                    when (type) {
+                                        LibraryType.WRONG ->
+                                            UserLibrary.removeWrong(target.dbName, target.wordId)
+                                        LibraryType.FAVORITE ->
+                                            UserLibrary.removeFavorite(target.dbName, target.wordId)
+                                    }
+                                }.exceptionOrNull()
+                            }
+                            if (error != null) {
+                                if (error is CancellationException) throw error
+                                Toast.makeText(context, "删除失败：${error.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                            }
+                            reloadEntries()
+                        }
+                    },
+                ) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
+            },
+        )
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
@@ -177,18 +229,7 @@ fun LibraryScreen(
                         type = type,
                         backdrop = liquidBackdrop,
                         onClick = { onWordClick(entry.dbName, entry.wordId) },
-                        onDelete = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    // 全部词库视图下必须按条目自身所属词库删除
-                                    when (type) {
-                                        LibraryType.WRONG -> UserLibrary.removeWrong(entry.dbName, entry.wordId)
-                                        LibraryType.FAVORITE -> UserLibrary.removeFavorite(entry.dbName, entry.wordId)
-                                    }
-                                }
-                                reloadEntries()
-                            }
-                        },
+                        onDelete = { pendingDelete = entry },
                     )
                 }
             }

@@ -35,7 +35,7 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
+    override fun obtainRuntimeShader(key: String, string: String): RuntimeShader? {
         return runtimeShaderCache.obtainRuntimeShader(key, string)
     }
 

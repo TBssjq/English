@@ -23,19 +23,23 @@ class MainActivity : ComponentActivity() {
         UserLibrary.init(this)
         CheckInManager.init(this)
         UserManager.init(this)
+        // 修复（启动 H-1）：升级后的首次启动必须先清空旧词库副本，再渲染首屏。
+        // 旧实现把清理放在后台协程里，与首屏统计/查词的拷贝并发，会出现
+        // 「刚拷完的副本被删掉」「打开已被删除的路径」，表现为首屏崩溃或词库丢失。
+        // 清理本身只做文件 rename（进 .trash），耗时可忽略，因此放在 setContent 之前同步完成。
+        val versionCode = packageManager.getPackageInfo(packageName, 0).longVersionCode
+        if (!UserManager.isVersionChecked(versionCode)) {
+            // 清理成功才落版本标记：失败时下次启动会重试，不会永久残留旧副本
+            runCatching { DatabaseManager.clearCachedDatabases(applicationContext) }
+                .onSuccess { UserManager.markVersionChecked(versionCode) }
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             UserLibrary.repairStoredLists()
-            // 升级后的第一次启动清空词库副本：副本不随应用更新，
-            // 沿用旧副本会让新版本里修正过的词库内容不生效
-            val versionCode = packageManager.getPackageInfo(packageName, 0).longVersionCode
-            if (UserManager.markVersionChecked(versionCode)) {
-                DatabaseManager.clearCachedDatabases(applicationContext)
-            }
         }
         val activityManager = checkNotNull(getSystemService(ActivityManager::class.java))
-        GlassQuality.configure(
-            activityManager.isLowRamDevice || Runtime.getRuntime().maxMemory() < 256L * 1024 * 1024
-        )
+        // 以系统低内存档位为准。仅凭堆上限会把部分正常设备误判成低端机，
+        // 导致折射、色散与装饰层全部关闭，玻璃看起来没有厚度。
+        GlassQuality.configure(activityManager.isLowRamDevice)
         GlassQuality.setEffectsEnabled(UserManager.glassEffectFlow.value)
         setContent {
             EnglishTheme {

@@ -16,6 +16,27 @@ data class LibrarySubcategory(
     val totalWords: Int get() = dbFiles.size
 }
 
+/**
+ * 词库的中文显示信息，供界面分行排版使用。
+ *
+ * 旧实现只给出一整串「高中英语 · 北师大版高中 10」，主界面用大字号整段渲染时，
+ * 窄屏会把序号折到第二行、只剩「高中 10」一行超大文字，视觉极不平衡。
+ * 拆成分类 / 册名两段后，界面可以分别控制字号与行数。
+ *
+ * @param category    分类中文名，去掉括号内的英文缩写，如「高中英语」
+ * @param subcategory 子分类中文名，如「北师大版高中」
+ * @param bookName    带序号的册名，如「北师大版高中 10」；未收录时退化为原始文件名
+ * @param rawName     原始 db 文件名（不含 .db），仅内部排查用，不直接展示
+ * @param mapped      是否已在分类目录中登记（false 表示未知词库，只能显示文件名）
+ */
+data class BookDisplay(
+    val category: String,
+    val subcategory: String,
+    val bookName: String,
+    val rawName: String,
+    val mapped: Boolean,
+)
+
 object LibraryCatalog {
 
     /**
@@ -23,17 +44,64 @@ object LibraryCatalog {
      * 只用于展示，文件读写与 SharedPreferences 的键仍使用原始 dbName。
      */
     fun displayName(dbName: String): String {
+        val parts = displayParts(dbName)
+        return if (parts.mapped) "${parts.category} · ${parts.bookName}" else parts.bookName
+    }
+
+    /**
+     * 把 db 文件名解析成中文显示信息（分类 / 册名分开），供需要分行排版的界面使用。
+     */
+    fun displayParts(dbName: String): BookDisplay {
         val name = dbName.removeSuffix(".db")
         for (category in categories) {
             for (sub in category.subcategories) {
                 val index = sub.dbFiles.indexOf(name)
                 if (index >= 0) {
-                    val prefix = category.name.substringBefore("（")
-                    return "$prefix · ${sub.name} ${index + 1}"
+                    return BookDisplay(
+                        category = category.name.substringBefore("（").trim(),
+                        subcategory = sub.name,
+                        bookName = "${sub.name} ${index + 1}",
+                        rawName = name,
+                        mapped = true,
+                    )
                 }
             }
         }
-        return name
+        // 未登记的词库：直接显示文件名，界面据此提示「未登记」而不是假装有中文名
+        return BookDisplay(
+            category = "其他词库",
+            subcategory = "",
+            bookName = name,
+            rawName = name,
+            mapped = false,
+        )
+    }
+
+    /**
+     * 按关键词匹配词库：中文分类名 / 子分类名 / 中文显示名 / 原始文件名都能命中。
+     * 旧实现只匹配原始文件名（如 BeiShiGaoZhong_1），输入「北师大」搜不到任何词库。
+     */
+    fun matchesQuery(dbName: String, query: String): Boolean {
+        val q = query.trim()
+        if (q.isEmpty()) return true
+        val raw = dbName.removeSuffix(".db")
+        if (raw.contains(q, ignoreCase = true)) return true
+        // 中文比对时忽略空格：「高中10」也能命中「北师大版高中 10」
+        val compactQ = q.replace(" ", "")
+        val parts = displayParts(dbName)
+        if (parts.bookName.replace(" ", "").contains(compactQ, ignoreCase = true)) return true
+        if (parts.subcategory.replace(" ", "").contains(compactQ, ignoreCase = true)) return true
+        // 分类名同时按全名（含英文缩写，如「大学英语四级（CET4）」）与短名匹配
+        val fullCategory = categories.firstOrNull { cat ->
+            cat.subcategories.any { sub -> sub.dbFiles.any { it == raw } }
+        }?.name
+        if (fullCategory != null) {
+            if (fullCategory.contains(q, ignoreCase = true)) return true
+            if (fullCategory.substringBefore("（").replace(" ", "").contains(compactQ, ignoreCase = true)) {
+                return true
+            }
+        }
+        return false
     }
 
     /**
@@ -114,7 +182,7 @@ object LibraryCatalog {
         LibraryCategory(
             name = "商务英语（BEC）",
             subcategories = listOf(
-                LibrarySubcategory("BEC", listOf("BEC_2", "BEC_3")),
+                LibrarySubcategory("商务英语词汇", listOf("BEC_2", "BEC_3")),
             ),
         ),
         // ========== 雅思 ==========
@@ -129,14 +197,14 @@ object LibraryCatalog {
         LibraryCategory(
             name = "托福（TOEFL）",
             subcategories = listOf(
-                LibrarySubcategory("TOEFL", listOf("TOEFL_2", "TOEFL_3")),
+                LibrarySubcategory("托福词汇", listOf("TOEFL_2", "TOEFL_3")),
             ),
         ),
         // ========== GRE ==========
         LibraryCategory(
             name = "美国研究生入学考试（GRE）",
             subcategories = listOf(
-                LibrarySubcategory("GRE", listOf("GRE_2", "GRE_3")),
+                LibrarySubcategory("研究生入学词汇", listOf("GRE_2", "GRE_3")),
             ),
         ),
         // ========== GMAT ==========
@@ -151,7 +219,7 @@ object LibraryCatalog {
         LibraryCategory(
             name = "美国大学入学考试（SAT）",
             subcategories = listOf(
-                LibrarySubcategory("SAT", listOf("SAT_2", "SAT_3")),
+                LibrarySubcategory("本科入学词汇", listOf("SAT_2", "SAT_3")),
             ),
         ),
         // ========== 高中英语 ==========
@@ -160,7 +228,7 @@ object LibraryCatalog {
             subcategories = listOf(
                 LibrarySubcategory("通用高中", listOf("GaoZhong_2", "GaoZhong_3", "GaoZhongluan_2")),
                 LibrarySubcategory(
-                    "人教版高中（PEP）",
+                    "人教版高中",
                     List(11) { "PEPGaoZhong_${it + 1}" },
                 ),
                 LibrarySubcategory(
@@ -175,7 +243,7 @@ object LibraryCatalog {
             subcategories = listOf(
                 LibrarySubcategory("通用初中", listOf("ChuZhong_2", "ChuZhong_3", "ChuZhongluan_2")),
                 LibrarySubcategory(
-                    "人教版初中（PEP）",
+                    "人教版初中",
                     listOf(
                         "PEPChuZhong7_1", "PEPChuZhong7_2",
                         "PEPChuZhong8_1", "PEPChuZhong8_2",
@@ -190,10 +258,10 @@ object LibraryCatalog {
         ),
         // ========== 小学英语 ==========
         LibraryCategory(
-            name = "小学英语（人教版PEP）",
+            name = "小学英语",
             subcategories = listOf(
                 LibrarySubcategory(
-                    "人教版 PEP",
+                    "人教版小学",
                     listOf(
                         "PEPXiaoXue3_1", "PEPXiaoXue3_2",
                         "PEPXiaoXue4_1", "PEPXiaoXue4_2",
@@ -232,21 +300,26 @@ object LibraryCatalog {
      * 返回：子分类全限定名 + 对应 db 文件列表。
      */
     fun search(query: String, availableDbs: List<String>): List<Pair<String, List<String>>> {
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) return emptyList()
+        val q = query.trim()
+        if (q.isBlank()) return emptyList()
+        val lowerQ = q.lowercase()
         val availableNames = availableDbs.map { it.removeSuffix(".db") }.toSet()
         val result = mutableListOf<Pair<String, List<String>>>()
         for (cat in categories) {
             for (sub in cat.subcategories) {
+                // 用 matchesQuery 逐本匹配：中文分类名 / 册名 / 序号都能命中，
+                // 不再是「只能按 BeiShiGaoZhong 这类英文文件名搜索」
                 val matchedDbs = sub.dbFiles
-                    .filter { it in availableNames && it.lowercase().contains(q) }
-                val catMatch = cat.name.lowercase().contains(q)
-                val subMatch = sub.name.lowercase().contains(q)
+                    .filter { it in availableNames && matchesQuery(it, q) }
+                val catMatch = cat.name.lowercase().contains(lowerQ)
+                val subMatch = sub.name.lowercase().contains(lowerQ)
                 if (matchedDbs.isNotEmpty() || catMatch || subMatch) {
                     val dbs = if (matchedDbs.isNotEmpty()) matchedDbs
                     else sub.dbFiles.filter { it in availableNames }
                     if (dbs.isNotEmpty()) {
-                        result += ("${cat.name} · ${sub.name}" to dbs)
+                        // 标题只用中文分类名，去掉「（CET4）」这类英文括号注释
+                        val catLabel = cat.name.substringBefore("（").trim()
+                        result += ("$catLabel · ${sub.name}" to dbs)
                     }
                 }
             }

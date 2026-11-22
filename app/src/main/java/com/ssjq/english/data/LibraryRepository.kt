@@ -50,8 +50,7 @@ object LibraryRepository {
 
     private val mutex = Mutex()
 
-    private fun entryKey(entry: WordEntry): String =
-        "${entry.wordId}#${entry.dbName.removeSuffix(".db")}"
+    private fun entryKey(entry: WordEntry): String = entry.sourceId
 
     suspend fun getAllEntries(): Pair<List<WordEntry>, List<WordEntry>> = mutex.withLock {
         getAllEntriesUnsafe()

@@ -99,14 +99,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(
+    onBack: () -> Unit,
+    onShowUpdate: (AppVersion) -> Unit,
+    onShowNotice: (NoticeData) -> Unit,
+) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var checkingUpdate by remember { mutableStateOf(false) }
-    var showUpdateDialog by remember { mutableStateOf(false) }
-    var latestVersion by remember { mutableStateOf<AppVersion?>(null) }
     var currentVersion by remember { mutableStateOf("") }
     var updateError by remember { mutableStateOf<String?>(null) }
 
@@ -117,8 +119,6 @@ fun AboutScreen(onBack: () -> Unit) {
 
     // 最新公告：与版本号无关，随时可直接拉取
     var loadingNotice by remember { mutableStateOf(false) }
-    var showNoticeDialog by remember { mutableStateOf(false) }
-    var latestNotice by remember { mutableStateOf<NoticeData?>(null) }
     var noticeError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
@@ -138,8 +138,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 val (version, result) = AppUpdateManager.checkUpdate(context)
                 when (result) {
                     UpdateResult.NEW_VERSION_AVAILABLE -> {
-                        latestVersion = version
-                        showUpdateDialog = true
+                        if (version != null) onShowUpdate(version)
                     }
                     UpdateResult.NO_UPDATE -> {
                         updateError = "当前已是最新版本"
@@ -168,8 +167,7 @@ fun AboutScreen(onBack: () -> Unit) {
                     NoticeResult.HAS_NOTICE -> {
                         // 解析层已保证字段非空，但仍需过滤"无内容"的脏数据，避免弹出空对话框
                         if (notice != null && notice.hasContent()) {
-                            latestNotice = notice
-                            showNoticeDialog = true
+                            onShowNotice(notice)
                         } else {
                             noticeError = "暂无公告"
                         }
@@ -184,14 +182,6 @@ fun AboutScreen(onBack: () -> Unit) {
                 loadingNotice = false
             }
         }
-    }
-
-    fun openNoticeUrl(url: String) {
-        if (!AppUpdateManager.openUrl(context, url)) {
-            Toast.makeText(context, "链接无效，请稍后重试", Toast.LENGTH_SHORT).show()
-            return
-        }
-        showNoticeDialog = false
     }
 
     fun openEditUsername() {
@@ -213,15 +203,6 @@ fun AboutScreen(onBack: () -> Unit) {
         currentUsername = newUsername.trim()
         showUsernameDialog = false
         Toast.makeText(context, "用户名已修改", Toast.LENGTH_SHORT).show()
-    }
-
-    fun handleUpdateClick() {
-        val v = latestVersion ?: return
-        if (!AppUpdateManager.openDownloadUrl(context, v)) {
-            Toast.makeText(context, "下载地址无效，请稍后重试", Toast.LENGTH_SHORT).show()
-            return
-        }
-        showUpdateDialog = false
     }
 
     // 全应用共享的背景采样层
@@ -554,41 +535,6 @@ fun AboutScreen(onBack: () -> Unit) {
     }
     } // end of Box (liquid glass background)
 
-    // 更新弹窗（液态玻璃）
-    if (showUpdateDialog && latestVersion != null) {
-        val v = latestVersion!!
-        val force = v.forceUpdate
-        LiquidGlassDialog(
-            backdrop = liquidBackdrop,
-            onDismissRequest = { if (!force) showUpdateDialog = false },
-            dismissOnClickOutside = !force,
-            dismissLocked = force,
-        ) {
-            Text(
-                "发现新版本 v${v.latestVersion}",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(12.dp))
-            GlassDialogBody(v.changelog.ifBlank { "新版本已发布，立即体验！" })
-            Spacer(Modifier.height(20.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                if (!force) {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("稍后再说")
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
-                TextButton(onClick = { handleUpdateClick() }) {
-                    Text("立即更新")
-                }
-            }
-        }
-    }
-
     // 修改用户名弹窗（液态玻璃）
     if (showUsernameDialog) {
         LiquidGlassDialog(
@@ -637,46 +583,6 @@ fun AboutScreen(onBack: () -> Unit) {
         }
     }
 
-    // 最新公告：液态玻璃对话框（与版本号无关，可直接拉取）
-    if (showNoticeDialog && latestNotice != null) {
-        val n = latestNotice!!
-        val force = n.isForce
-        LiquidGlassDialog(
-            backdrop = liquidBackdrop,
-            onDismissRequest = { if (!force) showNoticeDialog = false },
-            dismissOnClickOutside = !force,
-            dismissLocked = force,
-        ) {
-            Text(
-                n.title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(12.dp))
-            GlassDialogBody(n.content)
-            Spacer(Modifier.height(20.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                if (!force) {
-                    TextButton(onClick = { showNoticeDialog = false }) {
-                        Text("知道了")
-                    }
-                } else if (n.url.isBlank()) {
-                    TextButton(onClick = { showNoticeDialog = false }) {
-                        Text("我知道了")
-                    }
-                }
-                if (n.url.isNotBlank()) {
-                    if (!force) Spacer(Modifier.width(8.dp))
-                    TextButton(onClick = { openNoticeUrl(n.url) }) {
-                        Text(n.btnText.ifBlank { "查看详情" })
-                    }
-                }
-            }
-        }
-    }
 }
 
 @Composable

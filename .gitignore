@@ -71,3 +71,10 @@ Desktop.ini
 
 # 第三方参考仓库与安装中间产物
 /.reference/
+/AndroidLiquidGlass-kmp/
+
+# SQLite 运行时生成的词库日志
+*.db-wal
+*.db-shm
+/temp/
+/PROGRAM_FLOW.md

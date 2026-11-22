@@ -16,7 +16,49 @@ data class WordEntry(
     val dbName: String,
     val tranCn: String? = null,
     val addedAt: Long = System.currentTimeMillis(),
-)
+) {
+    /** 错题本与测验错题集共用这个标识，跨词库同 wordId 不会互相覆盖 */
+    val sourceId: String get() = WordSource.id(dbName, wordId)
+
+    /** 词单条目转回测验可用的词条，保留所属词库供答错时写回 */
+    fun toWordDetail(): WordDetail = WordDetail(
+        wordId = wordId,
+        headWord = headWord,
+        usPhone = null,
+        ukPhone = null,
+        star = 0,
+        remMethod = null,
+        trans = listOfNotNull(tranCn?.takeIf { it.isNotBlank() }?.let { TransItem(null, it) }),
+        phrases = emptyList(),
+        sentences = emptyList(),
+        relWords = emptyList(),
+        synos = emptyList(),
+        antos = emptyList(),
+        dbName = WordSource.canonicalDb(dbName),
+    )
+}
+
+/** 词库名与词号构成的稳定标识，供错题本、测验断点、疯狂刷题共用 */
+object WordSource {
+    fun canonicalDb(name: String?): String = name?.removeSuffix(".db").orEmpty()
+
+    fun id(dbName: String?, wordId: String): String =
+        "${canonicalDb(dbName)}#$wordId"
+
+    /** 兼容旧断点里只有 wordId 的写法；返回 null 表示格式无效 */
+    fun parseId(raw: String): Pair<String, String>? {
+        val split = raw.indexOf('#')
+        if (split <= 0 || split == raw.lastIndex) return null
+        val db = canonicalDb(raw.substring(0, split))
+        val wordId = raw.substring(split + 1)
+        if (db.isBlank() || wordId.isBlank()) return null
+        return db to wordId
+    }
+
+    /** 旧存档只保存 wordId 时也能参与统一去重，新存档仍使用完整词源标识 */
+    fun canonicalSourceId(raw: String): String =
+        parseId(raw)?.let { id(it.first, it.second) } ?: raw
+}
 
 /**
  * 用户词单管理：错题本（不认识）与收藏夹（手动收藏）。
@@ -52,12 +94,9 @@ object UserLibrary {
                 writeList(key, emptyList())
                 return@forEach
             }
-            val originalCount = JSONArray(raw).length()
-            if (parsed.size != originalCount) {
-                writeList(key, parsed)
-            } else {
-                setCachedList(key, parsed)
-            }
+            // 即使条数相同，也要把旧版 dbName 后缀与重复项规范化后写回，
+            // 否则错题本与测验错题集会因同一词的两个标识继续分裂
+            writeList(key, parsed)
         }
         val orderRaw = prefs.getString(KEY_CATEGORY_ORDER, null) ?: return
         if (runCatching { JSONArray(orderRaw) }.isFailure) {
@@ -82,10 +121,10 @@ object UserLibrary {
     // ---------- 背诵进度 ----------
 
     /** 词库名统一去掉 .db 后缀：路由里两种写法都存在，混用会让同一词库分裂出两套进度 */
-    private fun canonicalDb(name: String): String = name.removeSuffix(".db")
+    private fun canonicalDb(name: String): String = WordSource.canonicalDb(name)
 
     /** 旧版本以带后缀的名称写入过进度，读取时兼容一次 */
-    private fun legacyDb(name: String): String = "${name.removeSuffix(".db")}.db"
+    private fun legacyDb(name: String): String = "${WordSource.canonicalDb(name)}.db"
 
     /** 读取某词库的背诵进度（已背诵到第几个，0-based）。从未背诵返回 0 */
     fun studyIndex(dbName: String): Int {
@@ -176,7 +215,7 @@ object UserLibrary {
     fun addWrong(entry: WordEntry) {
         val normalized = entry.copy(dbName = canonicalDb(entry.dbName))
         val list = readListSafe(KEY_WRONG).toMutableList()
-        if (list.none { it.wordId == normalized.wordId && it.dbName == normalized.dbName }) {
+        if (list.none { it.sourceId == normalized.sourceId }) {
             list.add(normalized)
             writeList(KEY_WRONG, list)
         }
@@ -186,12 +225,12 @@ object UserLibrary {
     fun removeWrong(dbName: String, wordId: String) {
         val db = canonicalDb(dbName)
         val list = readListSafe(KEY_WRONG)
-        writeList(KEY_WRONG, list.filterNot { it.wordId == wordId && it.dbName == db })
+        writeList(KEY_WRONG, list.filterNot { it.sourceId == WordSource.id(db, wordId) })
     }
 
     fun isWrong(dbName: String, wordId: String): Boolean {
         val db = canonicalDb(dbName)
-        return readList(KEY_WRONG).any { it.wordId == wordId && it.dbName == db }
+        return readList(KEY_WRONG).any { it.sourceId == WordSource.id(db, wordId) }
     }
 
     fun wrongWords(dbName: String): List<WordEntry> {
@@ -207,6 +246,18 @@ object UserLibrary {
      */
     fun allWrongWords(): List<WordEntry> =
         readList(KEY_WRONG).sortedByDescending { it.addedAt }
+
+    /**
+     * 按统一词源标识取错题条目。测验结果页与疯狂刷题共用这份数据，
+     * 用户在错题本里删除某词后，回到结果页不会再次看到旧快照。
+     */
+    fun wrongWordsBySourceIds(ids: Collection<String>): List<WordEntry> {
+        val wanted = ids.map(WordSource::canonicalSourceId).toSet()
+        val wantedWordIds = ids.filter { WordSource.parseId(it) == null }.toSet()
+        return readList(KEY_WRONG).filter {
+            it.sourceId in wanted || it.wordId in wantedWordIds
+        }
+    }
 
     // ---------- 收藏夹 ----------
 
@@ -268,7 +319,7 @@ object UserLibrary {
             val wordId = o.optString("wordId")
             val dbName = canonicalDb(o.optString("dbName"))
             if (wordId.isBlank() || dbName.isBlank()) continue
-            val key = "$wordId#$dbName"
+            val key = WordSource.id(dbName, wordId)
             if (!seen.add(key)) continue
             list.add(
                 WordEntry(
@@ -326,7 +377,7 @@ object UserLibrary {
     internal fun writeList(key: String, list: List<WordEntry>) {
         val normalized = list
             .map { it.copy(dbName = canonicalDb(it.dbName)) }
-            .distinctBy { "${it.wordId}#${it.dbName}" }
+            .distinctBy { it.sourceId }
         val arr = JSONArray()
         normalized.forEach { e ->
             arr.put(JSONObject().apply {

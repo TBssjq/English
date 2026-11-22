@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +28,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
@@ -35,6 +38,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -51,6 +55,8 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -70,13 +76,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -210,6 +220,8 @@ fun HomeScreen(
     var dueReviewIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var dailyGoal by remember { mutableStateOf(UserManager.getDailyGoal()) }
     var showGoalPicker by remember { mutableStateOf(false) }
+    // 顶栏溢出菜单：目标 / 用户名 / 分享 / 排序 / 关于
+    var showMoreMenu by remember { mutableStateOf(false) }
     // 错题与收藏的总数按全部词库统计：跨词库测验的错题分散在各库
     var wrongTotal by remember { mutableStateOf(0) }
     var favoriteTotal by remember { mutableStateOf(0) }
@@ -310,84 +322,205 @@ fun HomeScreen(
         showUsernameDialog = true
     }
 
+    val todayWords = checkInStats.todayRecord?.wordsLearned ?: 0
+    val safeDailyGoal = dailyGoal.coerceAtLeast(1)
+    val goalReached = todayWords >= safeDailyGoal
+    val remainingWords = (safeDailyGoal - todayWords).coerceAtLeast(0)
+    val streakDays = checkInStats.currentStreak
+    val welcomeLine = when {
+        goalReached && streakDays > 0 -> "连续 $streakDays 天，真稳！"
+        goalReached -> "今日目标达成！"
+        remainingWords <= 5 && streakDays > 0 -> "就差 $remainingWords 词，别断 $streakDays 天"
+        remainingWords <= 5 -> "就差 $remainingWords 词！"
+        streakDays > 0 -> "欢迎回来，连续 $streakDays 天"
+        else -> "欢迎背单词"
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             containerColor = Color.Transparent,
             topBar = {
-                TopAppBar(
-                    modifier = Modifier.glassTopBar(liquidBackdrop),
-                    colors = glassTopBarColors(),
-                    title = {
-                        if (isEditingOrder) {
-                            Text("调整分类顺序", fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    navigationIcon = {
-                        if (!isEditingOrder && !hasFilter) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onOpenAbout() }
-                                    .padding(8.dp)
-                            ) {
+                // 头部常驻区：顶栏与搜索框固定在此，列表筛选变化不影响输入框节点，
+                // 连续输入时输入法保持展开
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    TopAppBar(
+                        modifier = Modifier.glassTopBar(liquidBackdrop),
+                        colors = glassTopBarColors(),
+                        title = {
+                            if (isEditingOrder) {
+                                Text("调整分类顺序", fontWeight = FontWeight.Bold)
+                            } else if (!hasFilter) {
+                                // 顶栏标题区总高固定 64dp，只放两行：欢迎语一行、学习进度一行，
+                                // 行间距 2dp，两行合计不超过 44dp，避免垂直方向被裁切。
+                                // 用户名已移到左上角，第二行不再重复用户名。
                                 Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
                                 ) {
-                                    Image(
-                                        painter = painterResource(R.drawable.walnut_body),
-                                        contentDescription = "关于我",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(25.dp)
-                                            .clip(CircleShape),
-                                    )
-                                    Spacer(Modifier.height(4.dp))
                                     Text(
-                                        "关于我&检查更新",
-                                        style = MaterialTheme.typography.labelSmall,
+                                        welcomeLine,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.ExtraBold,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        fontWeight = FontWeight.Medium,
+                                        // 欢迎语必须完整显示：不换行、不加省略号，
+                                        // 左侧头像已替换为用户名，标题可用宽度足够
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Visible,
                                     )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            "今日 $todayWords / $safeDailyGoal 词",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (goalReached || remainingWords <= 5) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Visible,
+                                            modifier = Modifier.weight(1f, fill = false),
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        // 进度以 safeDailyGoal 为分母，目标为 0 时不会出现 NaN
+                                        LinearProgressIndicator(
+                                            progress = {
+                                                (todayWords.toFloat() / safeDailyGoal)
+                                                    .coerceIn(0f, 1f)
+                                            },
+                                            modifier = Modifier
+                                                .width(48.dp)
+                                                .height(3.dp)
+                                                .clip(GlassShapes.Tag),
+                                            color = if (goalReached) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.secondary
+                                            },
+                                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                        )
+                                    }
                                 }
                             }
-                        }
-                    },
-                    scrollBehavior = scrollBehavior,
-                    actions = {
-                        if (hasFilter) return@TopAppBar
-                        if (isEditingOrder) {
-                            TextButton(onClick = {
-                                // 保存顺序并触发重读
-                                UserLibrary.saveCategoryOrder(editingOrderNames)
-                                orderVersion++
-                                isEditingOrder = false
-                                editedOrder = emptyList()
-                            }) {
-                                Text("保存", color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold)
+                        },
+                        navigationIcon = {
+                            if (!isEditingOrder && !hasFilter) {
+                                // 左上角改为显示当前用户名（点击仍进入「关于与检查更新」）。
+                                // 用户名限宽 110dp，超长才省略，避免把右侧标题再次挤扁。
+                                Text(
+                                    currentUsername,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .widthIn(max = 110.dp)
+                                        .clip(GlassShapes.Tag)
+                                        .clickable(onClick = onOpenAbout)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                )
                             }
-                            TextButton(onClick = {
-                                isEditingOrder = false
-                                editedOrder = emptyList()
-                            }) {
-                                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
+                        scrollBehavior = scrollBehavior,
+                        actions = {
+                            if (hasFilter) return@TopAppBar
+                            if (isEditingOrder) {
+                                TextButton(onClick = {
+                                    // 保存顺序并触发重读
+                                    UserLibrary.saveCategoryOrder(editingOrderNames)
+                                    orderVersion++
+                                    isEditingOrder = false
+                                    editedOrder = emptyList()
+                                }) {
+                                    Text("保存", color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold)
+                                }
+                                TextButton(onClick = {
+                                    isEditingOrder = false
+                                    editedOrder = emptyList()
+                                }) {
+                                    Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            } else {
+                                // 目标 / 用户名 / 分享 / 排序四项收进溢出菜单：
+                                // 平铺时标题可用宽度不足，是「欢迎…」被截断的直接原因
+                                Box {
+                                    IconButton(
+                                        onClick = { showMoreMenu = true },
+                                        modifier = Modifier.size(40.dp),
+                                    ) {
+                                        Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
+                                    }
+                                    DropdownMenu(
+                                        expanded = showMoreMenu,
+                                        onDismissRequest = { showMoreMenu = false },
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    if (goalReached) {
+                                                        "每日目标：$safeDailyGoal 词（今日已达标）"
+                                                    } else {
+                                                        "每日目标：$safeDailyGoal 词（还差 $remainingWords 词）"
+                                                    },
+                                                )
+                                            },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showGoalPicker = true
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("修改用户名") },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                openEditUsername()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("分享给朋友") },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                shareApp()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("调整分类顺序") },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                isEditingOrder = true
+                                                editedOrder = orderedCatalog.map { it.name }
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("关于与检查更新") },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                onOpenAbout()
+                                            },
+                                        )
+                                    }
+                                }
                             }
-                        } else {
-                            IconButton(onClick = { shareApp() }) {
-                                Icon(Icons.Filled.Share, "分享")
-                            }
-                            IconButton(onClick = {
-                                isEditingOrder = true
-                                editedOrder = orderedCatalog.map { it.name }
-                            }) {
-                                Icon(Icons.Filled.SwapVert, "排序")
-                            }
-                        }
-                    },
-                )
-            }
+                        },
+                    )
+                    // 搜索框常驻在顶栏正下方、列表之外：位置与节点都不随筛选结果变化
+                    if (!isEditingOrder) {
+                        HomeSearchField(
+                            value = filter,
+                            onValueChange = { filter = it },
+                            backdrop = liquidBackdrop,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+                        )
+                    }
+                }
+            },
         ) { padding ->
             LazyColumn(
                 state = rememberLazyListState(),
@@ -396,7 +529,9 @@ fun HomeScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
             ) {
                 // 顶部迷你设置条：深色模式（三态）+ 玻璃特效开关
-                if (showEntryCards) item {
+                // 列表内所有 item 都显式给 key：条目会随筛选条件整体增删，
+                // key 保证节点身份稳定，滚动位置与内部状态不被牵连
+                if (showEntryCards) item(key = "settings-bar") {
                     // lambda 必须稳定：LiquidToggle 内部以 selected 为 LaunchedEffect 的 key，
                     // 每次重组新建 lambda 会导致内部状态/动画被反复重置
                     val toggleSelected = remember(darkThemeMode) { { darkThemeMode == true } }
@@ -434,8 +569,10 @@ fun HomeScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface,
+                                    // 固定标签宽度：两行的状态小字（深色 / 折射与色散）落在同一列，
+                                    // 旧实现按文字实际宽度排在标签后，两行缩进不一致，看着松散
+                                    modifier = Modifier.width(72.dp),
                                 )
-                                Spacer(Modifier.width(6.dp))
                                 Text(
                                     when (darkThemeMode) {
                                         true -> "深色"
@@ -444,6 +581,8 @@ fun HomeScreen(
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Spacer(Modifier.weight(1f))
                                 if (darkThemeMode != null) {
@@ -482,12 +621,14 @@ fun HomeScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.width(72.dp),
                                 )
-                                Spacer(Modifier.width(6.dp))
                                 Text(
                                     if (glassEffect) "折射与色散" else "已关闭",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Spacer(Modifier.weight(1f))
                                 LiquidToggle(
@@ -501,7 +642,7 @@ fun HomeScreen(
                 }
 
                 // 当前学习词库 + 开始学习：提升到列表最前，确保首屏即可点击，无需滚动
-                if (currentBook != null && !showFullCatalog) item {
+                if (currentBook != null && !showFullCatalog) item(key = "current-book-panel") {
                     val book = currentBook
                     CurrentBookPanel(
                         backdrop = liquidBackdrop,
@@ -520,123 +661,8 @@ fun HomeScreen(
                     )
                 }
 
-                // 仪表盘：点击直接进入当前词库的背诵，修改用户名走右侧铅笔图标
-                if (showEntryCards) item {
-                    LiquidButton(
-                        onClick = {
-                            val book = currentBook
-                            if (book != null) {
-                                UserManager.setCurrentBook(book)
-                                onStartStudy(book)
-                            } else {
-                                // 老用户还没有当前词库，先展开分类表让其选择
-                                showAllBooks = true
-                            }
-                        },
-                        backdrop = liquidBackdrop,
-                        height = 104.dp,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                    ) {
-                        Image(
-                            painter = painterResource(R.drawable.walnut_body),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(CircleShape),
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            val todayWords = checkInStats.todayRecord?.wordsLearned ?: 0
-                            val goalReached = todayWords >= dailyGoal
-                            val remainingWords = (dailyGoal - todayWords).coerceAtLeast(0)
-                            val streakDays = checkInStats.currentStreak
-                            Text(
-                                currentUsername,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            )
-                            Text(
-                                // 复用欢迎语这一行：连续记录与临门一脚都在这里；
-                                // 新增行会把固定高度的欢迎卡片挤出屏幕
-                                when {
-                                    goalReached && streakDays > 0 -> "连续 $streakDays 天，真稳！"
-                                    goalReached -> "今日目标达成！"
-                                    remainingWords <= 5 && streakDays > 0 -> "就差 $remainingWords 词，别断 $streakDays 天"
-                                    remainingWords <= 5 -> "就差 $remainingWords 词！"
-                                    streakDays > 0 -> "欢迎回来，连续 $streakDays 天"
-                                    else -> "欢迎背单词"
-                                },
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    "今日 $todayWords / $dailyGoal 词",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (goalReached || remainingWords <= 5) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                )
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    if (goalReached) "已达标 · 调整" else "调整目标",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier
-                                        .clip(GlassShapes.Tag)
-                                        .clickable { showGoalPicker = true }
-                                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            LinearProgressIndicator(
-                                progress = {
-                                    (todayWords.toFloat() / dailyGoal).coerceIn(0f, 1f)
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .clip(GlassShapes.Tag),
-                                color = if (goalReached) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.secondary
-                                },
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Icon(
-                            Icons.Filled.Edit,
-                            contentDescription = "修改用户名",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                // 内层消费点击，外层开始背诵不会被连带触发
-                                .clickable(
-                                    interactionSource = null,
-                                    indication = null,
-                                ) { openEditUsername() }
-                                .padding(8.dp)
-                                .size(20.dp),
-                        )
-                    }
-                }
-
                 // 疯狂刷题入口（液态玻璃按钮）
-                if (showEntryCards) item {
+                if (showEntryCards) item(key = "crazy-quiz-entry") {
                     LiquidButton(
                         onClick = onOpenCrazyQuiz,
                         backdrop = liquidBackdrop,
@@ -677,7 +703,7 @@ fun HomeScreen(
                 }
 
                 // 每日打卡入口（液态玻璃按钮）
-                item {
+                item(key = "checkin-entry") {
                     val stats = checkInStats
                     val checkedIn = stats.isCheckedInToday
                     val tint = if (checkedIn) {
@@ -731,7 +757,7 @@ fun HomeScreen(
                 }
 
                 // 导出数据入口（液态玻璃按钮）
-                if (showEntryCards) item {
+                if (showEntryCards) item(key = "export-entry") {
                     LiquidButton(
                         onClick = { showExportDialog = true },
                         backdrop = liquidBackdrop,
@@ -772,69 +798,10 @@ fun HomeScreen(
 
                 // 外观设置：液态玻璃面板 + 库自带 LiquidToggle
 
-                // 搜索框：液态玻璃胶囊
-                if (!isEditingOrder) item {
-                    LiquidCard(
-                        backdrop = liquidBackdrop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .height(56.dp),
-                        shape = Capsule,
-                        blurRadius = 8.dp,
-                        lensHeight = 12.dp,
-                        lensAmount = 22.dp,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 18.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Filled.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Box(modifier = Modifier.weight(1f)) {
-                                if (filter.isBlank()) {
-                                    Text(
-                                        "搜索单词或词库…",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                                    )
-                                }
-                                BasicTextField(
-                                    value = filter,
-                                    onValueChange = { filter = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    ),
-                                    singleLine = true,
-                                )
-                            }
-                            if (filter.isNotBlank()) {
-                                Spacer(Modifier.width(6.dp))
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "清空",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .clickable { filter = "" },
-                                )
-                            }
-                        }
-                    }
-                }
-
                 if (hasFilter) {
                     // 单词搜索结果（跨所有词库）
                     if (wordSearchLoading) {
-                        item {
+                        item(key = "word-search-loading") {
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                                 contentAlignment = Alignment.Center,
@@ -893,8 +860,7 @@ fun HomeScreen(
                             }
                             items(dbs, key = { it }) { db ->
                                 LibraryCard(
-                                    name = db,
-                                    group = fullName.substringAfter(" · "),
+                                    dbName = db,
                                     wordCount = wordCounts[db],
                                     onClick = { pickBook("$db.db") },
                                     backdrop = liquidBackdrop,
@@ -905,7 +871,7 @@ fun HomeScreen(
 
                     // 完全没有结果
                     if (!wordSearchLoading && wordSearchResults.isEmpty() && searchResults.isEmpty()) {
-                        item {
+                        item(key = "search-empty") {
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 48.dp),
                                 contentAlignment = Alignment.Center,
@@ -919,7 +885,7 @@ fun HomeScreen(
                     }
                 } else if (isEditingOrder) {
                     // 排序编辑模式：仅显示分类卡片，右侧有上下箭头
-                    item {
+                    item(key = "order-hint") {
                         Text(
                             "点击上/下箭头调整顺序，或拖动条目",
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
@@ -951,7 +917,7 @@ fun HomeScreen(
                             backdrop = liquidBackdrop,
                         )
                     }
-                    item {
+                    item(key = "order-reset") {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1008,8 +974,7 @@ fun HomeScreen(
                                 if (subExpanded) {
                                     items(sub.dbFiles, key = { "$subKey-$it" }) { db ->
                                         LibraryCard(
-                                            name = db,
-                                            group = sub.name,
+                                            dbName = db,
                                             wordCount = wordCounts[db],
                                             onClick = { pickBook("$db.db") },
                                             backdrop = liquidBackdrop,
@@ -1173,10 +1138,12 @@ private fun OrderableCategoryItem(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    category.name,
+                    category.name.substringBefore("（").trim(),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     "$totalDbs 个词库",
@@ -1271,12 +1238,14 @@ private fun WordSearchResultCard(
                 color = MaterialTheme.colorScheme.secondaryContainer,
             ) {
                 Text(
-                    item.dbName,
+                    // 标签显示中文册名，旧实现直接露出 BeiShiGaoZhong_10 这类文件名
+                    LibraryCatalog.displayName(item.dbName),
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -1309,10 +1278,13 @@ private fun CategoryHeader(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    category.name,
+                    // 只显示中文分类名，去掉「（CET4）」这类英文括号注释
+                    category.name.substringBefore("（").trim(),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     if (allLoaded && totalWords > 0) "$totalWords 词 · $totalDbs 库"
@@ -1390,12 +1362,13 @@ private fun SubcategoryCard(
 /** 词库卡片：液态玻璃按钮，圆形图标 + 名称 + 描述 + 右箭头 */
 @Composable
 private fun LibraryCard(
-    name: String,
-    group: String,
+    dbName: String,
     wordCount: Int?,
     onClick: () -> Unit,
     backdrop: Backdrop,
 ) {
+    // 标题只显示中文册名（旧实现直接显示 BeiShiGaoZhong_10 这类英文文件名）
+    val parts = LibraryCatalog.displayParts(dbName)
     // 词库列表项使用轻量玻璃
     LiquidGlassListItem(
         backdrop = backdrop,
@@ -1425,16 +1398,22 @@ private fun LibraryCard(
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    name,
+                    parts.bookName,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    if (wordCount != null) "$group 词库 · 共 $wordCount 词"
-                    else "$group 词库 · 加载中…",
+                    buildString {
+                        if (parts.mapped) append("${parts.category} · ")
+                        append(if (wordCount != null) "共 $wordCount 词" else "正在统计词数…")
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.width(8.dp))
@@ -1485,15 +1464,42 @@ private fun CurrentBookPanel(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
+            // 旧实现把「高中英语 · 北师大版高中 10」整串塞进 headlineMedium（28sp），
+            // 一行放不下就折行，只剩「高中 10」独占一行且字号最大，视觉极不平衡。
+            // 现在拆成「分类（小字）+ 册名（中号、可两行）」两层排版，册名内部不再被折断。
+            val bookParts = LibraryCatalog.displayParts(dbName)
             Text(
-                LibraryCatalog.displayName(dbName),
-                style = MaterialTheme.typography.headlineMedium,
+                if (bookParts.mapped) bookParts.category else "其他词库",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                bookParts.bookName,
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.ExtraBold,
+                fontSize = 25.sp,
+                lineHeight = 32.sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(22.dp))
+            if (!bookParts.mapped) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "未登记词库，显示文件名",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(20.dp))
             LiquidButton(
                 onClick = onStartStudy,
                 backdrop = backdrop,
@@ -1566,6 +1572,97 @@ private fun CurrentBookPanel(
                         fontSize = 14.sp,
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 首页搜索框：常驻在顶栏下方、列表之外。
+ *
+ * 输入框节点与列表解耦，筛选结果增删不打断输入；键盘动作为 ImeAction.Search，
+ * 清空按钮不夺走焦点，交互全程保持输入状态。
+ */
+@Composable
+private fun HomeSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    backdrop: Backdrop,
+    modifier: Modifier = Modifier,
+) {
+    val focusManager = LocalFocusManager.current
+    val focusRequester = remember { FocusRequester() }
+    // lambda 必须稳定：BasicTextField 重组时不应重建键盘动作
+    val keyboardActions = remember(focusManager) {
+        KeyboardActions(onSearch = {
+            // 用户主动提交搜索后才收起输入法，焦点交给系统清理
+            focusManager.clearFocus()
+        })
+    }
+    val keyboardOptions = remember { KeyboardOptions(imeAction = ImeAction.Search) }
+
+    LiquidCard(
+        backdrop = backdrop,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .height(52.dp),
+        shape = Capsule,
+        blurRadius = 8.dp,
+        lensHeight = 12.dp,
+        lensAmount = 22.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Box(modifier = Modifier.weight(1f)) {
+                if (value.isBlank()) {
+                    Text(
+                        "搜索单词或词库…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    singleLine = true,
+                    keyboardOptions = keyboardOptions,
+                    keyboardActions = keyboardActions,
+                )
+            }
+            if (value.isNotBlank()) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "清空",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(24.dp)
+                        // 清空后把焦点还给输入框，用户可以接着输入
+                        .clip(CircleShape)
+                        .clickable {
+                            onValueChange("")
+                            focusRequester.requestFocus()
+                        }
+                        .padding(2.dp),
+                )
             }
         }
     }

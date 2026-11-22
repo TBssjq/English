@@ -187,6 +187,7 @@ fun QuizScreen(
             state.load()
         } catch (e: Exception) {
             if (e is CancellationException) throw e
+            state.resetLoadingOnFailure()
             Toast.makeText(context, "测验加载失败，请返回重试", Toast.LENGTH_SHORT).show()
         }
     }
@@ -226,17 +227,28 @@ fun QuizScreen(
             is AnswerResult.Skipped -> result.markedWrong
             else -> false
         }
-        if (!shouldMark) return@LaunchedEffect
         val word = uiState.currentQuestion?.word ?: return@LaunchedEffect
         val ownerDb = word.dbName?.takeIf { it.isNotBlank() && it != "crazy_quiz" } ?: dbName
         if (ownerDb == "crazy_quiz") return@LaunchedEffect
-        val entry = WordEntry(
-            wordId = word.wordId,
-            headWord = word.headWord,
-            dbName = ownerDb,
-            tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
-        )
-        withContext(Dispatchers.IO) { UserLibrary.addWrong(entry) }
+        val canonicalDb = com.ssjq.english.data.WordSource.canonicalDb(ownerDb)
+        withContext(Dispatchers.IO) {
+            if (shouldMark) {
+                UserLibrary.addWrong(
+                    WordEntry(
+                        wordId = word.wordId,
+                        headWord = word.headWord,
+                        dbName = canonicalDb,
+                        tranCn = word.trans.firstOrNull()?.tranCn?.takeIf { it.isNotBlank() },
+                    ),
+                )
+            } else if (
+                uiState.answerResult is AnswerResult.Correct ||
+                uiState.answerResult is AnswerResult.AlmostCorrect
+            ) {
+                // 测验答对与详情页「认识」保持一致，立即从错题本移除
+                UserLibrary.removeWrong(canonicalDb, word.wordId)
+            }
+        }
     }
 
     // 测验完成时自动打卡：答对数 + 总题数 + 学过的单词数。
@@ -244,8 +256,7 @@ fun QuizScreen(
     LaunchedEffect(uiState.isFinished, uiState.totalQuestions) {
         if (!uiState.isFinished) return@LaunchedEffect
         val report = state.consumeFinishReport() ?: return@LaunchedEffect
-        // 本轮已结束，清掉缓存：否则同参数再进测验会直接看到上一轮的结果页
-        QuizStateCache.remove(stateKey)
+        // 完成后保留缓存，结果页跳单词详情再返回时仍能看到结果；退出测验时统一清理
         // 整段放到 IO：accumulate() 会把全部打卡记录 JSON 反序列化再写回，
         // saveQuizRecord() 也会解析/序列化刷题记录，记录较多时在主线程会造成卡顿
         withContext(Dispatchers.IO) {
@@ -406,13 +417,13 @@ fun QuizScreen(
                 CircularProgressIndicator()
             }
         } else if (uiState.isFinished) {
+            // 结果页的错题数量与列表都来自错题本，删除记录后两者同步变化
+            val resultWrongWords = state.wrongWordsFromBook()
             ResultScreen(
                 correctCount = uiState.correctCount,
                 totalCount = uiState.totalQuestions,
-                // 用去重后的数量：小题库会循环出词，同一词可能被错多次，
-                // 否则结果页「错题回顾(N)」的数字会大于实际回顾题量
-                wrongWords = state.distinctWrongCount(),
-                wrongWordList = uiState.wrongWords.distinct(),
+                wrongWords = resultWrongWords.size,
+                wrongWordList = resultWrongWords,
                 onOpenWord = { word -> openWordDetail(word) },
                 modeStats = uiState.modeStats,
                 onRestart = { state.dispatch(QuizIntent.Restart) },

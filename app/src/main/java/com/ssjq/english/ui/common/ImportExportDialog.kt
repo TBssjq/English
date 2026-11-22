@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.ssjq.english.data.ExportContentType
@@ -294,8 +295,19 @@ fun ImportExportDialog(
                                                     )
                                                     Spacer(Modifier.width(8.dp))
                                                     Column {
-                                                        Text(dbName, style = MaterialTheme.typography.bodyMedium)
-                                                        Text(category.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                        Text(
+                                                            com.ssjq.english.data.LibraryCatalog.displayName(dbName),
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
+                                                        Text(
+                                                            category.name.substringBefore("（").trim(),
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
                                                     }
                                                 }
                                             }
@@ -468,6 +480,8 @@ internal suspend fun performImport(
     uri: Uri,
     strategy: ImportConflictStrategy,
 ): String = runCatching {
+    // 先做大小上限与磁盘空间预检：不通过则直接失败，避免读爆内存或写坏词库
+    LibraryFileManager.checkImportFeasible(context, uri)
     val jsonString = LibraryFileManager.readFile(context, uri)
     LibraryFileManager.validateJson(jsonString)
     val data = LibraryFileManager.deserializeFromJson(jsonString)

@@ -4,6 +4,8 @@ import com.ssjq.english.ui.common.glassInnerShadow
 import com.ssjq.english.ui.common.glassShadow
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,8 +18,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -98,7 +98,7 @@ fun ResultScreen(
 
     Box(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(24.dp))
@@ -270,11 +270,11 @@ fun ResultScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+            Column(
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(wrongWordList, key = { "${it.dbName}-${it.wordId}" }) { word ->
+                wrongWordList.forEach { word ->
                     LiquidGlassListItem(
                         backdrop = liquidBackdrop,
                         onClick = { onOpenWord(word) },

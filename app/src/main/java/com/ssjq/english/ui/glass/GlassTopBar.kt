@@ -23,20 +23,22 @@ import com.kyant.backdrop.shadow.Shadow
 fun Modifier.glassTopBar(backdrop: Backdrop): Modifier {
     val palette = LocalGlassPalette.current
     val surface = palette.surfaceTint
-    val highlightAlpha = if (palette.isDark) 0.85f else 0.55f
+    val highlightAlpha = if (palette.isDark) 1f else 0.8f
     val glowColor = palette.glowColor
     val highlight = Highlight.Default.copy(alpha = highlightAlpha)
     val shadow = Shadow(radius = 20.dp, color = glowColor)
-    return rememberGlassSurfaceModifier(
+    return this.then(
+        rememberGlassSurfaceModifier(
         backdrop = backdrop,
         shape = GlassShapes.TopBarBlock(),
-        blurRadius = 14.dp,
-        lensHeight = 12.dp,
-        lensAmount = 22.dp,
+        blurRadius = 18.dp,
+        lensHeight = 16.dp,
+        lensAmount = 36.dp,
         surfaceColor = surface,
         highlight = highlight,
         shadow = shadow,
         innerShadow = null,
+        )
     )
 }
 

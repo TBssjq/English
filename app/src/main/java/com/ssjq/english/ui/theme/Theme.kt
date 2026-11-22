@@ -97,10 +97,18 @@ fun EnglishTheme(
 ) {
     // 响应式观察主题变化
     val userDarkTheme by UserManager.darkThemeFlow.collectAsState()
+    // 三态语义：true = 强制暗色，false = 强制亮色，null = 跟随系统
+    // 修复：null 分支只允许取系统的实时值（isSystemInDarkTheme 是可观察的 State，
+    // 系统切换深浅色会正常驱动重组）。旧实现用 `|| isNightByTime()` 把「按时间」
+    // 混进来，导致用户选「跟随系统」且系统为亮色时，18:00 后仍被强制切暗色；
+    // 而 isNightByTime() 读的是 Calendar，既不会跨 18:00/06:00 主动触发重组，
+    // 又会在每次重组时重新求值，出现「到点不切换、偶发整屏翻色」。
+    // 若以后要提供「按时间」模式，应作为独立的第四种模式，并用 produceState
+    // 定时到下一个 06:00/18:00 的可观察数据源驱动，不能塞进 null 分支。
     val effectiveDarkTheme = when (darkTheme ?: userDarkTheme) {
         true -> true
         false -> false
-        null -> isSystemInDarkTheme() || isNightByTime()
+        null -> isSystemInDarkTheme()
     }
 
     val colorScheme = when {

@@ -33,6 +33,8 @@ import androidx.compose.ui.util.lerp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.colorControls
+import com.kyant.backdrop.effects.lens
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
@@ -55,12 +57,19 @@ fun LiquidBottomTabs(
 ) {
     val palette = LocalGlassPalette.current
     val containerColor =
-        if (palette.isDark) Color(0xFF121212).copy(0.4f)
-        else Color(0xFFFAFAFA).copy(0.4f)
+        if (palette.isDark) Color(0xFF121212).copy(0.30f)
+        else Color(0xFFFAFAFA).copy(0.30f)
 
     val density = LocalDensity.current
-    // 指示器左右各留 4dp，拖动换算与它保持一致
+    // 指示器左右各留 4dp，所以可用宽度要减去两侧共 8dp
     val sideInset = with(density) { 8f.dp.toPx() }
+    // 指示器的视觉宽度 =（容器宽度 - 8dp 内边距）/ 页签数。
+    // 拖动换算与指示器定位共用这一份计算，保证手指滑过一格的位移与滑块行程一致。
+    val indicatorTabWidth: (Float) -> Float = remember(sideInset, tabsCount) {
+        { containerWidthPx: Float ->
+            ((containerWidthPx - sideInset) / tabsCount).coerceAtLeast(1f)
+        }
+    }
 
     val animationScope = rememberCoroutineScope()
     val offsetAnimation = remember { Animatable(0f) }
@@ -73,9 +82,10 @@ fun LiquidBottomTabs(
     }
 
     val isLtr = LocalLayoutDirection.current == LayoutDirection.Ltr
-    var currentIndex by remember(selectedTabIndex) {
-        mutableIntStateOf(selectedTabIndex())
-    }
+    // currentIndex 只在首次组合时取初值，之后由 LaunchedEffect 中的 snapshotFlow
+    // 单向跟随外部选中下标；selectedTabIndex 作为 remember 的 key 会让 lambda 实例
+    // 变化时内部状态被重置，这里改为持久保存。
+    var currentIndex by remember { mutableIntStateOf(selectedTabIndex()) }
 
     // 手势挂在整条底栏上：标签文字要绘制在指示器之上，若把手势留在指示器上，
     // 上层文字会挡住拖动。父层先处理 Main pass，标签自身的点击仍能正常触发。
@@ -101,7 +111,8 @@ fun LiquidBottomTabs(
                 }
             },
             onDrag = { size, dragAmount ->
-                val tab = ((size.width.toFloat() - sideInset) / tabsCount).coerceAtLeast(1f)
+                // 与指示器共用同一份宽度换算，拖动距离与视觉位移一一对应
+                val tab = indicatorTabWidth(size.width.toFloat())
                 updateValue(
                     (targetValue + dragAmount.x / tab * if (isLtr) 1f else -1f)
                         .fastCoerceIn(0f, (tabsCount - 1).toFloat())
@@ -111,6 +122,8 @@ fun LiquidBottomTabs(
         )
     }
 
+    // 外部（点击标签、系统返回键等）改变选中项时，指示器单向跟随：
+    // 发现差异才启动位移动画，currentIndex 只在此处与拖动吸附时写入。
     LaunchedEffect(selectedTabIndex) {
         snapshotFlow { selectedTabIndex() }
             .collectLatest { index ->
@@ -131,7 +144,7 @@ fun LiquidBottomTabs(
         modifier.then(dampedDragAnimation.modifier),
         contentAlignment = Alignment.CenterStart
     ) {
-        val tabWidth = (constraints.maxWidth.toFloat() - sideInset) / tabsCount
+        val tabWidth = indicatorTabWidth(constraints.maxWidth.toFloat())
         val panelOffset by remember(density) {
             derivedStateOf {
                 val fraction = (offsetAnimation.value / constraints.maxWidth).fastCoerceIn(-1f, 1f)
@@ -149,7 +162,18 @@ fun LiquidBottomTabs(
                     backdrop = backdrop,
                     shape = GlassShapes.PillBlock,
                     effects = {
+                        if (GlassQuality.vibrancyEnabled) {
+                            colorControls(brightness = 0.01f, contrast = 1.06f, saturation = 1.7f)
+                        }
                         blur(GlassQuality.adaptiveBlur(GlassQuality.bottomBarBlurRadius).toPx())
+                        if (GlassQuality.lensEnabled) {
+                            lens(
+                                refractionHeight = minOf(14f.dp.toPx(), size.minDimension / 2f),
+                                refractionAmount = minOf(42f.dp.toPx(), size.minDimension * 1.2f),
+                                depthEffect = true,
+                                chromaticAberration = GlassQuality.chromaticAberrationEnabled,
+                            )
+                        }
                     },
                     highlight = null,
                     shadow = null,
@@ -185,18 +209,29 @@ fun LiquidBottomTabs(
                     backdrop = backdrop,
                     shape = GlassShapes.PillBlock,
                     effects = {
-                        blur(GlassQuality.adaptiveBlur(2f.dp).toPx())
+                        if (GlassQuality.vibrancyEnabled) {
+                            colorControls(brightness = 0.02f, contrast = 1.1f, saturation = 1.9f)
+                        }
+                        blur(GlassQuality.adaptiveBlur(4f.dp).toPx())
+                        if (GlassQuality.lensEnabled) {
+                            lens(
+                                refractionHeight = minOf(12f.dp.toPx(), size.minDimension / 2f),
+                                refractionAmount = minOf(36f.dp.toPx(), size.minDimension * 1.2f),
+                                depthEffect = true,
+                                chromaticAberration = GlassQuality.chromaticAberrationEnabled,
+                            )
+                        }
                     },
                     highlight = if (decorations) {
                         {
                             Highlight.Default.copy(
-                                alpha = 0.16f + 0.24f * dampedDragAnimation.pressProgress
+                                alpha = 0.3f + 0.35f * dampedDragAnimation.pressProgress
                             )
                         }
                     } else null,
-                    shadow = if (decorations) { { Shadow(alpha = 0.06f) } } else null,
+                    shadow = if (decorations) { { Shadow(alpha = 0.12f) } } else null,
                     innerShadow = if (decorations) {
-                        { InnerShadow(radius = 6f.dp, alpha = 0.10f) }
+                        { InnerShadow(radius = 8f.dp, alpha = 0.16f) }
                     } else null,
                     layerBlock = {
                         scaleX = dampedDragAnimation.scaleX

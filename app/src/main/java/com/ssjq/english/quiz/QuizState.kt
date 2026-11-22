@@ -6,8 +6,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ssjq.english.data.DatabaseManager
 import com.ssjq.english.data.QuizRecordSummary
+import com.ssjq.english.data.UserLibrary
 import com.ssjq.english.data.UserManager
 import com.ssjq.english.data.WordDetail
+import com.ssjq.english.data.WordSource
 import com.ssjq.english.service.PronunciationPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -67,14 +69,24 @@ class QuizState(
     private var currentSeed: Long = 0L
 
     /** 词库名与单词编号共同标识题源，跨词库刷题恢复时不会取错词 */
-    private fun WordDetail.sourceId(): String =
-        "${dbName?.removeSuffix(".db").orEmpty()}#$wordId"
+    private fun WordDetail.sourceId(): String = WordSource.id(dbName, wordId)
+
+    /** 当前轮错题的稳定标识，供结果页与错题本互相刷新 */
+    fun wrongSourceIds(): List<String> =
+        uiState.wrongWords.map { it.sourceId() }.distinct()
+
+    /** 从错题本重建当前轮错题，删除记录后结果页与回顾队列同步变化 */
+    fun wrongWordsFromBook(): List<WordDetail> =
+        UserLibrary.wrongWordsBySourceIds(wrongSourceIds()).map { it.toWordDetail() }
 
     /** 当前是否处于「错题回顾」轮：回顾轮不参与打卡统计 */
     private var isReviewRound: Boolean = false
 
     /** 发音播放器 */
     private val pronunciationPlayer = PronunciationPlayer()
+
+    /** 状态机互斥锁：保证 dispatch 内的「判断 + 计数 + 落盘」整体原子 */
+    private val stateLock = Any()
 
     /** 加载题目（异步）。已经加载过则保持当前进度 */
     suspend fun load() {
@@ -102,6 +114,11 @@ class QuizState(
         // 有可用断点就回到上次的题号，否则重新出题
         if (!tryRestore()) regenerateQuestions()
         loaded = true
+    }
+
+    /** 加载出错时解除加载态，避免界面一直停在空白进度圈 */
+    fun resetLoadingOnFailure() {
+        uiState = uiState.copy(isLoading = false)
     }
 
     /** 根据 fixedMode 生成题目。seed 决定题序，断点恢复时传入同一个值 */
@@ -148,7 +165,9 @@ class QuizState(
             // 存档损坏时按重新开始处理，不能让解析异常冒到界面
             return false
         }
-        if (obj.optString("dbName") != dbName) return false
+        if (WordSource.canonicalDb(obj.optString("dbName")) !=
+            WordSource.canonicalDb(dbName)
+        ) return false
         if (obj.optString("mode") != (fixedMode?.label ?: "")) return false
         if (obj.optString("sourceKey") != (sourceKey ?: "")) return false
         if (obj.optInt("requestedCount", 0) != _questionCountLimit) return false
@@ -162,7 +181,11 @@ class QuizState(
             ?: emptyList()
         if (sourceIds.isNotEmpty()) {
             val bySourceId = loadedWords.associateBy { it.sourceId() }
-            val restored = sourceIds.mapNotNull { bySourceId[it] }
+            val byWordId = loadedWords.associateBy { it.wordId }
+            val restored = sourceIds.mapNotNull { rawId ->
+                val normalized = WordSource.canonicalSourceId(rawId)
+                bySourceId[normalized] ?: byWordId[normalized]
+            }
             if (restored.size == sourceIds.size) {
                 loadedWords = restored
                 originalWords = restored
@@ -177,10 +200,16 @@ class QuizState(
         rebuilt.groupBy { it.mode }.forEach { (mode, qs) ->
             modeStats[mode] = 0 to qs.size
         }
-        val wrongIds = obj.optJSONArray("wrongIds")
+        val wrongKeys = obj.optJSONArray("wrongSourceIds")
             ?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }
+            ?: obj.optJSONArray("wrongIds")
+                ?.let { arr -> (0 until arr.length()).map { arr.optString(it) } }
             ?: emptyList()
-        val wrongDetails = rebuilt.map { it.word }.filter { it.wordId in wrongIds }.distinct()
+        val wantedWrong = wrongKeys.map(WordSource::canonicalSourceId).toSet()
+        val wantedWordIds = wrongKeys.filter { WordSource.parseId(it) == null }.toSet()
+        val wrongDetails = rebuilt.map { it.word }
+            .filter { it.sourceId() in wantedWrong || it.wordId in wantedWordIds }
+            .distinctBy { it.sourceId() }
         uiState = QuizUiState(
             isLoading = false,
             currentIndex = index,
@@ -214,6 +243,10 @@ class QuizState(
             put("correct", uiState.correctCount)
             put("wrong", uiState.wrongCount)
             put("wrongIds", org.json.JSONArray(uiState.wrongWords.map { it.wordId }))
+            put(
+                "wrongSourceIds",
+                org.json.JSONArray(uiState.wrongWords.map { it.sourceId() }.distinct()),
+            )
             put("sourceIds", org.json.JSONArray(loadedWords.map { it.sourceId() }))
         }.toString()
         UserManager.saveQuizProgress(json)
@@ -237,15 +270,22 @@ class QuizState(
 
     /** 处理意图 */
     fun dispatch(intent: QuizIntent) {
-        when (intent) {
-            is QuizIntent.SelectOption -> handleSelectOption(intent.option)
-            is QuizIntent.UpdateSpelling -> handleUpdateSpelling(intent.input)
-            is QuizIntent.SubmitSpelling -> handleSubmitSpelling()
-            is QuizIntent.NextQuestion -> handleNextQuestion()
-            is QuizIntent.ReplayAudio -> handleReplayAudio()
-            is QuizIntent.SkipQuestion -> handleSkip(intent.markWrong)
-            is QuizIntent.Restart -> handleRestart()
-            is QuizIntent.ReviewWrong -> handleReviewWrong()
+        // 修复（quiz H-1）：各 handleXxx 都是「读 uiState → 判断 → 写 uiState」的
+        // 非原子序列。答题页存在多个入口并发派发意图（点击选项、软键盘提交、
+        // 计时协程超时提交、动画过渡期旧按钮）。两次调用同时读到 answerResult=Idle
+        // 时会各自加一次分并各插一条错题，表现为得分虚高、错题重复、
+        // 甚至 currentIndex 被连跳。这里用一把锁把整段状态迁移串行化。
+        synchronized(stateLock) {
+            when (intent) {
+                is QuizIntent.SelectOption -> handleSelectOption(intent.option)
+                is QuizIntent.UpdateSpelling -> handleUpdateSpelling(intent.input)
+                is QuizIntent.SubmitSpelling -> handleSubmitSpelling()
+                is QuizIntent.NextQuestion -> handleNextQuestion()
+                is QuizIntent.ReplayAudio -> handleReplayAudio()
+                is QuizIntent.SkipQuestion -> handleSkip(intent.markWrong)
+                is QuizIntent.Restart -> handleRestart()
+                is QuizIntent.ReviewWrong -> handleReviewWrong()
+            }
         }
     }
 
@@ -353,14 +393,14 @@ class QuizState(
     }
 
     private fun handleReviewWrong() {
-        val wrong = uiState.wrongWords.distinct()
+        val wrong = wrongWordsFromBook()
         if (wrong.isEmpty()) {
             uiState = uiState.copy(isFinished = true)
             return
         }
         val count = wrong.size.coerceAtLeast(1)
         questions = QuizEngine.generateQuestions(wrong, count, fixedMode = fixedMode)
-        loadedWords = questions.map { it.word }.distinct().ifEmpty { wrong }
+        loadedWords = questions.map { it.word }.distinctBy { it.sourceId() }.ifEmpty { wrong }
         // 回顾轮不参与打卡统计，也不允许再次上报
         isReviewRound = true
         modeStats.clear()
@@ -406,7 +446,7 @@ class QuizState(
     )
 
     /** 去重后的错题数（小题库会循环出词，同一词可能被错多次） */
-    fun distinctWrongCount(): Int = uiState.wrongWords.distinct().size
+    fun distinctWrongCount(): Int = wrongSourceIds().size
 
     /**
      * 取走「完成上报」许可，同一轮只会成功一次。
@@ -425,11 +465,12 @@ class QuizState(
         val total = uiState.totalQuestions
         if (total <= 0) return null      // 空词库不产生打卡记录
         reported = true
+        val wrong = wrongWordsFromBook()
         return FinishReport(
             correctCount = uiState.correctCount,
             totalQuestions = total,
-            wrongCount = uiState.wrongWords.distinct().size,
-            wrongWords = uiState.wrongWords.distinct(),
+            wrongCount = wrong.size,
+            wrongWords = wrong,
         )
     }
 }

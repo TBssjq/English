@@ -3,6 +3,8 @@ package com.kyant.backdrop
 import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.GraphicsLayerScope
@@ -14,15 +16,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
-import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.ObserverModifierNode
 import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireGraphicsContext
@@ -30,6 +31,7 @@ import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.toIntSize
 import com.kyant.backdrop.backdrops.LayerBackdrop
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.highlight.HighlightElement
@@ -176,12 +178,17 @@ private class DrawBackdropElement(
         node.shapeProvider = shapeProvider
         node.effects = effects
         node.layerBlock = layerBlock
-        node.exportedBackdrop = exportedBackdrop
+        if (node.exportedBackdrop != exportedBackdrop) {
+            node.exportedBackdrop?.layerCoordinates = null
+            node.exportedBackdrop = exportedBackdrop
+        }
         node.onDrawBehind = onDrawBehind
         node.onDrawBackdrop = onDrawBackdrop
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
-        node.markDirty()
+        // 绘制相关参数变化后必须重录导出层，否则会继续复用旧内容
+        node.invalidateExportedLayer()
+        node.invalidateDrawCache()
     }
 
     override fun InspectorInfo.inspectableProperties() {
@@ -240,8 +247,6 @@ private class DrawBackdropNode(
     var onDrawFront: (DrawScope.() -> Unit)?
 ) : LayoutModifierNode, DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
 
-    override val shouldAutoInvalidate: Boolean = false
-
     private val effectScope =
         object : BackdropEffectScopeImpl() {
 
@@ -256,18 +261,21 @@ private class DrawBackdropNode(
         compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
     }
 
-    private var layoutCoordinates: LayoutCoordinates? = null
-
-    // 窗口位置缓存：只在位置真正变化时才重录背景采样并请求重绘。
-    private var lastWindowX = Float.NaN
-    private var lastWindowY = Float.NaN
-
-    // 背景采样是否过期。坐标、尺寸、效果参数变化时置为 true。
-    private var backdropDirty = true
-
-    private var effectsDirty = true
+    private var layoutCoordinates: LayoutCoordinates? by mutableStateOf(null, neverEqualPolicy())
 
     private var padding by mutableFloatStateOf(0f)
+
+    // 修复（每帧整层重录）：导出层只在依赖变化时重录。
+    // 旧实现每次 draw() 都调用 recordLayer 重录整个全屏尺寸的层，内部还会再触发
+    // 一次 drawBackdropLayer 的录制，等于每帧 2 次全屏离屏渲染 + 模糊，滚动掉帧明显。
+    // 依赖变化（effects/padding/size/绘制参数）时把脏标记置 true，其余帧直接复用已录制内容。
+    private var exportedLayerDirty = true
+    private var exportedLayerSize: IntSize = IntSize.Zero
+
+    /** 标记导出层需要重录（由元素更新、效果重算、尺寸变化等依赖变化路径调用） */
+    fun invalidateExportedLayer() {
+        exportedLayerDirty = true
+    }
 
     private val recordBackdropBlock: (DrawScope.() -> Unit) = {
         val canvas = drawContext.canvas
@@ -290,26 +298,25 @@ private class DrawBackdropNode(
         }
     }
 
-    /** 重新采样背景到离屏层。仅在 backdropDirty 时调用。 */
-    private fun DrawScope.recordBackdropLayer() {
-        val layer = graphicsLayer ?: return
-        val padding = padding
-        recordLayer(
-            layer,
-            size = IntSize(
-                size.width.toInt() + padding.toInt() * 2,
-                size.height.toInt() + padding.toInt() * 2
-            ),
-            block = recordBackdropBlock
-        )
-        layer.topLeft =
-            if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt())
-            else IntOffset.Zero
-    }
-
-    /** 把已采样的离屏层画到画布，不触发重新录制。 */
     private val drawBackdropLayer: DrawScope.() -> Unit = {
-        graphicsLayer?.let { drawLayer(it) }
+        val layer = graphicsLayer
+        if (layer != null) {
+            val padding = padding
+
+            recordLayer(
+                layer,
+                size = IntSize(
+                    size.width.toInt() + padding.toInt() * 2,
+                    size.height.toInt() + padding.toInt() * 2
+                ),
+                block = recordBackdropBlock
+            )
+
+            layer.topLeft =
+                if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt())
+                else IntOffset.Zero
+            drawLayer(layer)
+        }
     }
 
     override fun MeasureScope.measure(
@@ -322,36 +329,9 @@ private class DrawBackdropNode(
         }
     }
 
-    /** 上一次采样到的版本号，用于判断采样源是否已重录 */
-    private var lastRevision = -1
-
-    /** 读取采样版本建立快照依赖；变化时标记需要重新采样 */
-    private fun observeBackdropRevision() {
-        val current = backdrop.revision
-        if (current != lastRevision) {
-            lastRevision = current
-            backdropDirty = true
-        }
-    }
-
     override fun ContentDrawScope.draw() {
-        // 采样层重录后（换主题、背景尺寸变化）版本号会变，这里建立观察依赖，
-        // 变化时自动重绘并重新采样，不再等下一次点击。
-        // 组合采样同样透传版本号，开关这类多层叠加的玻璃也能实时刷新。
-        observeReads { observeBackdropRevision() }
-        if (effectsDirty) {
-            observeEffects()
-            effectsDirty = false
-        }
-        // 尺寸或密度变化会改变效果链与采样区域的输入，必须重建并重录
         if (effectScope.update(this)) {
-            observeEffects()
-            backdropDirty = true
-        }
-
-        val needsRecord = backdropDirty
-        if (needsRecord) {
-            recordBackdropLayer()
+            updateEffects()
         }
 
         onDrawBehind?.invoke(this)
@@ -360,51 +340,38 @@ private class DrawBackdropNode(
         drawContent()
         onDrawFront?.invoke(this)
 
-        if (needsRecord) {
-            exportedBackdrop?.let { exported ->
-                exported.graphicsLayer?.let { layer ->
-                    recordLayer(layer) {
-                        onDrawBehind?.invoke(this)
-                        drawBackdropLayer()
-                        onDrawSurface?.invoke(this)
-                        onDrawFront?.invoke(this)
-                    }
+        // 仅在依赖变化（脏标记）或尺寸变化时重录导出层，其余帧复用上一次的录制结果
+        exportedBackdrop?.graphicsLayer?.let { layer ->
+            val currentSize = size.toIntSize()
+            if (exportedLayerDirty || exportedLayerSize != currentSize) {
+                recordLayer(layer) {
+                    onDrawBehind?.invoke(this)
+                    drawBackdropLayer()
+                    onDrawSurface?.invoke(this)
+                    onDrawFront?.invoke(this)
                 }
-                // 导出层内容已更新，消费它的玻璃需要重新采样
-                exported.notifyContentChanged()
+                exportedLayerSize = currentSize
+                exportedLayerDirty = false
             }
-            backdropDirty = false
         }
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
-        if (!coordinates.isAttached) return
-        val position = coordinates.positionInWindow()
-        // 位置未变化时既不重录也不请求重绘：静止界面的玻璃保持上一帧采样结果
-        if (position.x == lastWindowX && position.y == lastWindowY) return
-        lastWindowX = position.x
-        lastWindowY = position.y
-        layoutCoordinates = if (backdrop.isCoordinatesDependent) coordinates else null
-        exportedBackdrop?.layerCoordinates = coordinates
-        backdropDirty = true
-        invalidateDraw()
+        if (coordinates.isAttached) {
+            layoutCoordinates = if (backdrop.isCoordinatesDependent) coordinates else null
+            exportedBackdrop?.layerCoordinates = coordinates
+        }
     }
 
     override fun onObservedReadsChanged() {
-        effectsDirty = true
-        // 采样层版本变化同样需要重新采样
-        backdropDirty = true
+        invalidateDrawCache()
         invalidateDraw()
     }
 
     fun invalidateDrawCache() {
-        markDirty()
-    }
-
-    fun markDirty() {
-        backdropDirty = true
-        effectsDirty = true
-        invalidateDraw()
+        // 效果/绘制依赖变化：导出层内容同样需要重录
+        exportedLayerDirty = true
+        observeEffects()
     }
 
     private fun observeEffects() {
@@ -415,19 +382,18 @@ private class DrawBackdropNode(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             effectScope.apply(effects)
             graphicsLayer?.renderEffect = effectScope.renderEffect?.asComposeRenderEffect()
-            // padding 决定离屏层的尺寸，变化时必须重新录制采样区域
+            // padding 直接决定导出层的内容边界，变化后必须重录
             if (padding != effectScope.padding) {
-                padding = effectScope.padding
-                backdropDirty = true
+                exportedLayerDirty = true
             }
+            padding = effectScope.padding
         }
     }
 
     override fun onAttach() {
         val graphicsContext = requireGraphicsContext()
         graphicsLayer = graphicsContext.createGraphicsLayer()
-        backdropDirty = true
-        effectsDirty = true
+        observeEffects()
     }
 
     override fun onDetach() {

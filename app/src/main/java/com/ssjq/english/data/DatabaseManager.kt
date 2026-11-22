@@ -5,7 +5,11 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import java.io.File
 import java.io.FileNotFoundException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 /** 词汇列表项（轻量，用于列表展示） */
 data class WordListItem(
@@ -90,6 +94,24 @@ object DatabaseManager {
     /** 每个词库一把拷贝锁，避免并发写同一文件造成词库损坏 */
     private val copyLocks = ConcurrentHashMap<String, Any>()
 
+    /**
+     * 词库副本目录的读写锁：
+     * 「打开/拷贝/查询」持读锁，「清理副本」持写锁。
+     * 修复（启动 H-1）：升级后首启会异步清空副本，而首屏统计/查词同时在拷贝并打开
+     * 同一批文件，旧实现没有任何互斥，可能出现「刚拷完的文件被删掉」或
+     * 「打开已被删除的路径」→ 首屏崩溃、词库丢失。
+     */
+    private val copyDirLock = ReentrantReadWriteLock()
+
+    /** 被清理的副本先移到这里，而不是直接删掉，给误删留一次人工恢复的机会 */
+    private const val TRASH_DIR = ".trash"
+
+    /** 回收目录中文件的保留时长：超过后才真正删除（1 天） */
+    private const val TRASH_RETENTION_MILLIS = 24L * 60 * 60 * 1000
+
+    /** 清理记录文件名（位于 filesDir）：记录被清理/被跳过/被失败的副本，便于事后核查 */
+    private const val CLEAR_LOG_FILE = "db_cache_clear.log"
+
     /** assets 下 .db 列表缓存（assets.list 是较重的 JNI 调用，且结果不会变） */
     @Volatile
     private var assetDbNames: List<String>? = null
@@ -138,37 +160,44 @@ object DatabaseManager {
         if (!SAFE_DB_NAME.matches(dbName)) {
             throw IllegalArgumentException("非法词库名: $rawName")
         }
-        val target = File(dbDir(context), dbName)
-        if (target.exists() && target.length() > 0L) return target.absolutePath
+        // 持读锁：拷贝期间不允许清理副本，否则可能拷完即被删（启动 H-1）
+        val readLock = copyDirLock.readLock()
+        readLock.lock()
+        try {
+            val target = File(dbDir(context), dbName)
+            if (target.exists() && target.length() > 0L) return target.absolutePath
 
-        val lock = copyLocks.getOrPut(dbName) { Any() }
-        return synchronized(lock) {
-            // 双检：拿到锁后可能已被其它线程拷好
-            if (target.exists() && target.length() > 0L) {
-                target.absolutePath
-            } else {
-                val tmp = File(target.parentFile, "$dbName.tmp")
-                try {
-                    val assetName = resolveAssetName(context, dbName)
-                        ?: throw FileNotFoundException("assets 中不存在词库: $dbName")
-                    context.assets.open(assetName).use { input ->
-                        tmp.outputStream().use { output ->
-                            input.copyTo(output)
-                            output.flush()
-                            output.fd.sync()
+            val lock = copyLocks.getOrPut(dbName) { Any() }
+            return synchronized(lock) {
+                // 双检：拿到锁后可能已被其它线程拷好
+                if (target.exists() && target.length() > 0L) {
+                    target.absolutePath
+                } else {
+                    val tmp = File(target.parentFile, "$dbName.tmp")
+                    try {
+                        val assetName = resolveAssetName(context, dbName)
+                            ?: throw FileNotFoundException("assets 中不存在词库: $dbName")
+                        context.assets.open(assetName).use { input ->
+                            tmp.outputStream().use { output ->
+                                input.copyTo(output)
+                                output.flush()
+                                output.fd.sync()
+                            }
                         }
+                        if (tmp.renameTo(target)) {
+                            target.absolutePath
+                        } else {
+                            // 极少数文件系统 rename 失败：直接用 tmp 路径打开，至少可用
+                            tmp.absolutePath
+                        }
+                    } catch (e: Exception) {
+                        tmp.delete()
+                        throw e
                     }
-                    if (tmp.renameTo(target)) {
-                        target.absolutePath
-                    } else {
-                        // 极少数文件系统 rename 失败：直接用 tmp 路径打开，至少可用
-                        tmp.absolutePath
-                    }
-                } catch (e: Exception) {
-                    tmp.delete()
-                    throw e
                 }
             }
+        } finally {
+            readLock.unlock()
         }
     }
 
@@ -176,15 +205,93 @@ object DatabaseManager {
      * 清空词库副本缓存，应用升级后调用一次。
      * 副本只校验文件是否完整，不校验内容版本；assets 里的词库被修正后，
      * 不清掉旧副本就会一直用旧数据。
+     *
+     * 修复（data H-2 / 启动 H-1）：
+     * 1. **一致性校验**：只清理「assets 中仍存在同名源文件」的副本和 .tmp 残留，
+     *    来源未知的库文件（用户自带/手工放入）一律保留，避免把唯一数据删掉；
+     * 2. **可逆**：先把副本移入 .trash 再按时间清理，误删时还能人工找回；
+     * 3. **互斥**：整段持有写锁，拷贝/打开副本的路径持读锁，消除并发删库窗口；
+     * 4. **可核查**：清理结果（删除/跳过/失败）写入 db_cache_clear.log。
      */
     fun clearCachedDatabases(context: Context) {
-        synchronized(this) {
-            pool.values.forEach { pooled ->
-                runCatching { pooled.db.close() }
+        val writeLock = copyDirLock.writeLock()
+        writeLock.lock()
+        try {
+            synchronized(this) {
+                pool.values.forEach { pooled ->
+                    runCatching { pooled.db.close() }
+                }
+                pool.clear()
             }
-            pool.clear()
+            val dir = dbDir(context)
+            // assets 里还有源文件的副本可以安全重建；其余文件保留
+            val regenerable = listAssetDatabases(context).toSet()
+            val removed = mutableListOf<String>()
+            val skipped = mutableListOf<String>()
+            val failed = mutableListOf<String>()
+            dir.listFiles()?.forEach { file ->
+                if (!file.isFile || file.name.startsWith(".")) return@forEach
+                val name = file.name
+                val isTempResidue = name.endsWith(".tmp")
+                if (!isTempResidue && name !in regenerable) {
+                    skipped.add(name)
+                    return@forEach
+                }
+                if (moveToTrash(context, file)) removed.add(name) else failed.add(name)
+            }
+            // 上次清理留下的残骸超过 1 天才真正删除，给误删留出恢复窗口
+            pruneTrash(context, TRASH_DIR)
+            writeClearLog(context, removed, skipped, failed)
+        } finally {
+            writeLock.unlock()
         }
-        dbDir(context).listFiles()?.forEach { it.delete() }
+    }
+
+    /** 把副本移入 .trash（可恢复），失败返回 false；成功后原路径即不存在 */
+    private fun moveToTrash(context: Context, file: File): Boolean {
+        val trashDir = File(dbDir(context), TRASH_DIR)
+        if (!trashDir.exists() && !trashDir.mkdirs()) {
+            // 无法建回收目录时退化为直接删除，保证升级流程不会因残留副本而卡住
+            return runCatching { file.delete() }.getOrDefault(false)
+        }
+        val target = File(trashDir, "${file.name}.${System.currentTimeMillis()}")
+        if (runCatching { file.renameTo(target) }.getOrDefault(false)) return true
+        return runCatching { file.delete() }.getOrDefault(false)
+    }
+
+    /** 清理 .trash 中超过保留期的残留文件 */
+    private fun pruneTrash(context: Context, dirName: String) {
+        val trashDir = File(dbDir(context), dirName)
+        if (!trashDir.isDirectory) return
+        val expireBefore = System.currentTimeMillis() - TRASH_RETENTION_MILLIS
+        trashDir.listFiles()?.forEach { file ->
+            if (file.isFile && file.lastModified() < expireBefore) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
+    /** 记录一次副本清理结果，异常不影响主流程 */
+    private fun writeClearLog(
+        context: Context,
+        removed: List<String>,
+        skipped: List<String>,
+        failed: List<String>
+    ) {
+        runCatching {
+            val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+            val line = buildString {
+                append(time)
+                append(" 删除=").append(removed.size)
+                append(" 保留(非 assets 库)=").append(skipped.size)
+                append(" 失败=").append(failed.size)
+                if (removed.isNotEmpty()) append(" | 删除: ").append(removed.joinToString(","))
+                if (skipped.isNotEmpty()) append(" | 保留: ").append(skipped.joinToString(","))
+                if (failed.isNotEmpty()) append(" | 失败: ").append(failed.joinToString(","))
+                append('\n')
+            }
+            File(context.filesDir, CLEAR_LOG_FILE).appendText(line)
+        }
     }
 
     /**
@@ -208,27 +315,34 @@ object DatabaseManager {
     fun openDatabase(context: Context, dbName: String): SQLiteDatabase {
         val key = normalizeDbName(dbName)
         // ensureCopied 内部按词库加锁，可能触发整库复制；
-        // 放到类锁外执行，避免复制期间阻塞其它词库的 open/release
-        val path = ensureCopied(context, key)
-        synchronized(this) {
-            val existing = pool[key]
-            if (existing != null && existing.db.isOpen) {
-                existing.refs++
-                existing.lastUsedNanos = System.nanoTime()
-                return existing.db
-            }
-            if (existing != null) {
-                // 连接已被外部关闭，丢弃后重建
-                pool.remove(key)
-            }
+        // 放到类锁外执行，避免复制期间阻塞其它词库的 open/release。
+        // 整段持读锁（启动 H-1）：避免「拷贝完成 → 升级清理删除副本 → 打开已消失的文件」。
+        val readLock = copyDirLock.readLock()
+        readLock.lock()
+        try {
+            val path = ensureCopied(context, key)
+            synchronized(this) {
+                val existing = pool[key]
+                if (existing != null && existing.db.isOpen) {
+                    existing.refs++
+                    existing.lastUsedNanos = System.nanoTime()
+                    return existing.db
+                }
+                if (existing != null) {
+                    // 连接已被外部关闭，丢弃后重建
+                    pool.remove(key)
+                }
 
-            reclaimIfNeeded()
+                reclaimIfNeeded()
 
-            val db = SQLiteDatabase.openDatabase(
-                path, null, SQLiteDatabase.OPEN_READONLY
-            )
-            pool[key] = Conn(db).also { it.refs = 1 }
-            return db
+                val db = SQLiteDatabase.openDatabase(
+                    path, null, SQLiteDatabase.OPEN_READONLY
+                )
+                pool[key] = Conn(db).also { it.refs = 1 }
+                return db
+            }
+        } finally {
+            readLock.unlock()
         }
     }
 
@@ -432,20 +546,19 @@ object DatabaseManager {
         return null
     }
 
-    /** 按单词（片段）模糊搜索，关联查询翻译/短语/例句等 */
     /**
-     * 只判断词库中是否存在匹配词，返回命中词的 id 与词头。
-     * 查词时先用它做轻量探测，未命中的词库不必构造完整词条（含 6 张关联表查询）。
+     * 精确查找词头，返回命中词的 id 与词头。
+     * 详情页点击例句或短语里的单词时走这里，大小写忽略，但必须整词相等；
+     * 未命中的词库不必构造完整词条（含 6 张关联表查询）。
      */
     fun findHeadWordId(db: SQLiteDatabase, keyword: String): Pair<String, String>? {
         if (!tableExists(db, "words")) return null
-        val like = "%$keyword%"
-        val prefix = "$keyword%"
+        val query = keyword.trim()
+        if (query.isEmpty()) return null
         return db.rawQuery(
-            "SELECT word_id, head_word FROM words WHERE head_word LIKE ? " +
-                "ORDER BY CASE WHEN head_word = ? THEN 0 " +
-                "WHEN head_word LIKE ? THEN 1 ELSE 2 END, word_rank LIMIT 1",
-            arrayOf(like, keyword, prefix)
+            "SELECT word_id, head_word FROM words " +
+                "WHERE head_word COLLATE NOCASE = ? LIMIT 1",
+            arrayOf(query)
         ).use { c ->
             if (!c.moveToFirst()) return null
             val wordId = c.getString(0) ?: error("词库存在空的 word_id")

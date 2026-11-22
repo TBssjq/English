@@ -83,13 +83,18 @@ internal fun defaultGlassSurfaceColor(): Color = LocalGlassPalette.current.surfa
 internal fun glassHighlight(alpha: Float = 1f): Highlight {
     return if (LocalGlassPalette.current.isDark) {
         Highlight(
-            width = 1.6.dp,
-            blurRadius = 0.9.dp,
-            alpha = (alpha * 1.35f).coerceAtMost(1f),
+            width = 2.2.dp,
+            blurRadius = 1.2.dp,
+            alpha = (alpha * 1.5f).coerceAtMost(1f),
             style = HighlightStyle.Ambient,
         )
     } else {
-        Highlight(width = 1.1.dp, blurRadius = 0.55.dp, alpha = alpha)
+        Highlight(
+            width = 1.6.dp,
+            blurRadius = 0.8.dp,
+            alpha = (alpha * 1.2f).coerceAtMost(1f),
+            style = HighlightStyle.Ambient,
+        )
     }
 }
 
@@ -141,9 +146,9 @@ fun LiquidGlassCard(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
     shape: Shape = GlassShapes.Card,
-    blurRadius: Dp = 10.dp,
-    lensHeight: Dp = 20.dp,
-    lensAmount: Dp = 34.dp,
+    blurRadius: Dp = 14.dp,
+    lensHeight: Dp = 22.dp,
+    lensAmount: Dp = 42.dp,
     surfaceColor: Color = defaultGlassSurfaceColor(),
     shadow: Shadow? = glassGlow(24.dp),
     highlight: Highlight? = glassHighlight(),
@@ -192,28 +197,43 @@ fun LiquidGlassCard(
  * 因此列表项改用「半透明磨砂 + 高光描边」的等效视觉，开销与普通卡片接近。
  *
  * 真正的液态玻璃（带折射采样）请用在数量可控的元素上：底栏、主卡片、按钮、对话框。
+ *
+ * @param selected 是否为列表中的当前选中项，选中时以强调色铺底并加粗描边
  */
 @Composable
 fun LiquidGlassListItem(
     backdrop: Backdrop,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    selected: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val palette = LocalGlassPalette.current
+    // 选中态用强调色铺底并加粗描边，与未选中项拉开明度与色相差异，
+    // 保证在毛玻璃列表里也能一眼分辨当前选中项。
+    val surface = if (selected) {
+        palette.accent.copy(alpha = if (palette.isDark) 0.30f else 0.18f)
+    } else {
+        palette.listSurface
+    }
+    val borderWidth = if (selected) 2.dp else 1.dp
+    val borderColor = if (selected) palette.accent else palette.listBorder
     Box(
         modifier = modifier
             .fillMaxWidth()
             .then(
                 if (onClick != null) {
-                    Modifier.clickable(role = Role.Button, onClick = onClick)
+                    Modifier.clickable(
+                        role = if (selected) Role.RadioButton else Role.Button,
+                        onClick = onClick,
+                    )
                 } else Modifier
             )
             .clip(GlassShapes.Item)
-            .background(color = palette.listSurface)
+            .background(color = surface)
             .border(
-                width = 1.dp,
-                color = palette.listBorder,
+                width = borderWidth,
+                color = borderColor,
                 shape = GlassShapes.Item,
             ),
         content = content,
@@ -264,9 +284,9 @@ fun LiquidGlassBadge(
     val glass = rememberGlassSurfaceModifier(
         backdrop = backdrop,
         shape = GlassShapes.CircleBlock(),
-        blurRadius = 5.dp,
-        lensHeight = 8.dp,
-        lensAmount = 18.dp,
+        blurRadius = 7.dp,
+        lensHeight = 10.dp,
+        lensAmount = 24.dp,
         surfaceColor = surfaceColor,
         highlight = highlight,
         shadow = glow,
@@ -296,9 +316,9 @@ fun LiquidGlassDialogSurface(
     val glass = rememberGlassSurfaceModifier(
         backdrop = backdrop,
         shape = GlassShapes.PanelBlock(),
-        blurRadius = 16.dp,
-        lensHeight = 22.dp,
-        lensAmount = 36.dp,
+        blurRadius = 20.dp,
+        lensHeight = 24.dp,
+        lensAmount = 48.dp,
         surfaceColor = resolvedSurfaceColor,
         highlight = highlight,
         shadow = glow,
@@ -350,6 +370,11 @@ object GlassDialogHost {
     }
 
     fun isActive(token: Any): Boolean = activeToken == token
+
+    /** 页面重建时清掉上一轮残留的宿主令牌，避免底栏一直被隐藏 */
+    fun reset() {
+        activeToken = null
+    }
 }
 
 /**
@@ -372,19 +397,19 @@ fun LiquidGlassDialog(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     dismissOnClickOutside: Boolean = true,
-    dismissLocked: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val token = remember { Any() }
     val dialogVisible = GlassDialogHost.isDialogVisible
     val active = GlassDialogHost.isActive(token)
+    // 先注册释放，再申请令牌：申请后若父级立刻移除弹窗，令牌仍会被清掉
+    DisposableEffect(token) {
+        onDispose { GlassDialogHost.release(token) }
+    }
     LaunchedEffect(dialogVisible) { GlassDialogHost.request(token) }
     if (!active) return
 
-    BackHandler(enabled = !dismissLocked, onBack = onDismissRequest)
-    DisposableEffect(Unit) {
-        onDispose { GlassDialogHost.release(token) }
-    }
+    BackHandler(onBack = onDismissRequest)
 
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
@@ -414,7 +439,7 @@ fun LiquidGlassDialog(
                 detectDragGestures(onDrag = { change, _ -> change.consume() })
             }
             .then(
-                if (dismissOnClickOutside && !dismissLocked) {
+                if (dismissOnClickOutside) {
                     Modifier.clickable(
                         interactionSource = null,
                         indication = null,

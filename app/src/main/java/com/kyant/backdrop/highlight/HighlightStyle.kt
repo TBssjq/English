@@ -64,7 +64,7 @@ interface HighlightStyle {
                 runtimeShaderCache.obtainRuntimeShader(
                     "Default",
                     DefaultHighlightShaderString
-                ).apply {
+                )?.apply {
                     setFloatUniform("size", size.width, size.height)
                     setFloatUniform("cornerRadii", getCornerRadii(shape))
                     setFloatUniform("angle", angle * (PI / 180f).toFloat())
@@ -94,7 +94,7 @@ interface HighlightStyle {
                 runtimeShaderCache.obtainRuntimeShader(
                     "Ambient",
                     AmbientHighlightShaderString
-                ).apply {
+                )?.apply {
                     setFloatUniform("size", size.width, size.height)
                     setFloatUniform("cornerRadii", getCornerRadii(shape))
                     setFloatUniform("angle", 45f * (PI / 180f).toFloat())
