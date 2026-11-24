@@ -116,6 +116,8 @@ fun QuizScreen(
     questionCount: Int = 20,
     /** 模式名：null/空=随机，"EnSelectCn"/"CnSelectEn"/"AudioSelect"/"Spelling"=固定 */
     mode: String? = null,
+    /** 随机模式下允许出现的题型（label 列表，空 = 全部题型），疯狂刷题自选题型的入口 */
+    allowedModes: List<String> = emptyList(),
     sourceWords: List<WordDetail> = emptyList(),
     /** 疯狂刷题题源标识，用于断点续做 */
     sourceKey: String? = null,
@@ -127,6 +129,10 @@ fun QuizScreen(
     val scope = rememberCoroutineScope()
     val routeSourceKey = sourceKey
     val fixedMode = remember(mode) { modeFromString(mode) }
+    // 题型白名单：把 label 还原成模式集合，供 QuizState 在随机时限定题型
+    val allowedModeSet = remember(allowedModes) {
+        if (allowedModes.isEmpty()) emptySet() else allowedModes.mapNotNull { QuizMode.fromLabel(it) }.toSet()
+    }
     // key 必须带上出题参数：旧实现无 key，同一路由复用换词库/换题量时
     // 会继续沿用上一轮的 QuizState，出的还是旧词库的题
     // 不要用整个 sourceWords 列表做 key：List.equals 会逐元素深度比较，
@@ -139,6 +145,7 @@ fun QuizScreen(
         sourceWords.firstOrNull()?.wordId,
         sourceWords.lastOrNull()?.wordId,
         fixedMode,
+        allowedModeSet,
         routeSourceKey,
     ) {
         listOf(
@@ -149,6 +156,7 @@ fun QuizScreen(
             sourceWords.firstOrNull()?.wordId.orEmpty(),
             sourceWords.lastOrNull()?.wordId.orEmpty(),
             fixedMode?.label ?: "random",
+            allowedModeSet.map { it.label }.sorted().joinToString(",").ifEmpty { "all-modes" },
         ).joinToString("|")
     }
     val state = remember(stateKey) {
@@ -158,6 +166,7 @@ fun QuizScreen(
             sourceWords = sourceWords,
             questionCount = questionCount,
             fixedMode = fixedMode,
+            allowedModes = allowedModeSet,
             // 自动发音是用户偏好，跨轮次保留
             autoPlayAudio = UserLibrary.autoPlayAudioEnabled(),
             sourceKey = routeSourceKey,

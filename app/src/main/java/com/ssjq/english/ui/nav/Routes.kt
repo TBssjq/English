@@ -29,6 +29,8 @@ data class QuizRoute(
     val sourceWords: List<com.ssjq.english.data.WordDetail> = emptyList(),
     /** 疯狂刷题的题源标识，用于退出后按同一批词恢复进度 */
     val sourceKey: String? = null,
+    /** 随机模式下允许出现的题型 label（空 = 全部题型），疯狂刷题选题型后带入 */
+    val allowedModes: List<String> = emptyList(),
 )
 
 /** 搜索页 */

@@ -476,6 +476,7 @@ fun AppNav() {
                 dbName = route.dbName,
                 questionCount = route.count,
                 mode = route.mode,
+                allowedModes = route.allowedModes,
                 sourceWords = route.sourceWords,
                 sourceKey = route.sourceKey,
                 onBack = { back() },
@@ -484,8 +485,8 @@ fun AppNav() {
 
             is CrazyQuizRoute -> CrazyQuizScreen(
                 onBack = { back() },
-                onStartQuiz = { _, words, key, count ->
-                    navigate(QuizRoute("crazy_quiz", count, null, words, key))
+                onStartQuiz = { _, words, key, count, modes ->
+                    navigate(QuizRoute("crazy_quiz", count, null, words, key, modes))
                 },
             )
         }

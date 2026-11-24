@@ -5,6 +5,7 @@ package com.ssjq.english.ui.crazyquiz
 import com.ssjq.english.ui.common.glassInnerShadow
 import com.ssjq.english.ui.common.glassShadow
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,12 +15,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -83,8 +87,10 @@ import com.ssjq.english.data.WordDetail
 import com.ssjq.english.data.WordSource
 import com.ssjq.english.data.WordEntry
 import com.ssjq.english.ui.common.LiquidGlassCard
+import com.ssjq.english.ui.common.LiquidGlassDialog
 import com.ssjq.english.ui.common.LiquidGlassListItem
 import com.ssjq.english.ui.nav.CrazyQuizSource
+import com.ssjq.english.quiz.QuizMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -125,6 +131,8 @@ fun CrazyQuizScreen(
         sourceWords: List<WordDetail>,
         sourceKey: String,
         count: Int,
+        /** 本轮允许出现的题型 label，空 = 全部 */
+        modes: List<String>,
     ) -> Unit,
 ) {
     val context = LocalContext.current
@@ -160,6 +168,8 @@ fun CrazyQuizScreen(
     // 每次开始疯狂刷题前都先选题量
     var showCountDialog by remember { mutableStateOf(false) }
     var quizCount by remember { mutableStateOf(20) }
+    // 疯狂刷题题型可多选：默认全选，允许用户只练某几种题型
+    var selectedModes by remember { mutableStateOf(QuizMode.all.toSet()) }
     var savedCounts by remember { mutableStateOf<Set<Int>>(emptySet()) }
     // 全应用共享的背景采样层与玻璃配色
     val liquidBackdrop = LocalAppBackdrop.current
@@ -241,7 +251,7 @@ fun CrazyQuizScreen(
             }
         }
         if (words.isNotEmpty()) {
-            onStartQuiz("crazy_quiz", words, key, quizCount)
+            onStartQuiz("crazy_quiz", words, key, quizCount, selectedModes.map { it.label })
         }
         startQuizTrigger = null
     }
@@ -566,27 +576,100 @@ fun CrazyQuizScreen(
             }
         }
     }
-    }
 
     if (showCountDialog) {
         val options = listOf(10, 20, 30, 50, 100)
-        AlertDialog(
+        LiquidGlassDialog(
+            backdrop = liquidBackdrop,
             onDismissRequest = { showCountDialog = false },
-            title = { Text("刷多少题？") },
-            text = {
-                Column {
-                    Text(
-                        "先选本轮题量，退出后可接着同一题源继续",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    options.forEach { count ->
-                        TextButton(
-                            onClick = { startSelectedQuiz(count) },
-                            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("选择题型与题量", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "题型可多选，本轮只出勾选的题型；至少保留一种",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(14.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "题型 · 已选 ${selectedModes.size}/${QuizMode.all.size}",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                QuizMode.all.forEach { mode ->
+                    val checked = selectedModes.contains(mode)
+                    LiquidGlassListItem(
+                        backdrop = liquidBackdrop,
+                        onClick = {
+                            // 至少保留一种题型：勾掉的最后一项不允许取消
+                            if (checked && selectedModes.size <= 1) {
+                                Toast.makeText(context, "至少保留一种题型", Toast.LENGTH_SHORT).show()
+                            } else {
+                                selectedModes = if (checked) selectedModes - mode else selectedModes + mode
+                            }
+                        },
+                        selected = checked,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            val saved = savedCounts.contains(count)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    mode.label,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    mode.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = if (checked) "已选" else "未选",
+                                tint = if (checked) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                },
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "题量",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                options.forEach { count ->
+                    val saved = savedCounts.contains(count)
+                    LiquidGlassListItem(
+                        backdrop = liquidBackdrop,
+                        onClick = { startSelectedQuiz(count) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             Text(
                                 if (!saved) "$count 题" else "$count 题 · 可继续上次",
                                 fontWeight = if (!saved) FontWeight.Normal else FontWeight.SemiBold,
@@ -594,11 +677,13 @@ fun CrazyQuizScreen(
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showCountDialog = false }) { Text("取消") }
-            },
-        )
+                TextButton(
+                    onClick = { showCountDialog = false },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("取消") }
+            }
+        }
+    }
     }
 }
 

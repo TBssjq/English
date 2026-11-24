@@ -26,6 +26,8 @@ class QuizState(
     private val questionCount: Int,
     /** null = 4 种模式随机；非 null = 固定该模式 */
     private val fixedMode: QuizMode? = null,
+    /** 随机模式下的题型白名单（空 = 全部题型），疯狂刷题自选题型时使用 */
+    private val allowedModes: Set<QuizMode> = emptySet(),
     /** 是否自动播放发音 */
     autoPlayAudio: Boolean = false,
     /** 题源标识，疯狂刷题退出后靠它判断能否继续同一批题 */
@@ -129,7 +131,13 @@ class QuizState(
             return
         }
         val count = _questionCountLimit.coerceAtMost(words.size).coerceAtLeast(1)
-        questions = QuizEngine.generateQuestions(words, count, fixedMode = fixedMode, seed = seed)
+        questions = QuizEngine.generateQuestions(
+            words = words,
+            count = count,
+            fixedMode = fixedMode,
+            allowedModes = allowedModes,
+            seed = seed,
+        )
         currentSeed = seed
         modeStats.clear()
         questions.groupBy { it.mode }.forEach { (mode, qs) ->
@@ -169,6 +177,8 @@ class QuizState(
             WordSource.canonicalDb(dbName)
         ) return false
         if (obj.optString("mode") != (fixedMode?.label ?: "")) return false
+        // 所选题型也必须一致：否则续做上一轮进度时会冒出用户已取消的题型
+        if (obj.optString("modes", "") != allowedModesKey()) return false
         if (obj.optString("sourceKey") != (sourceKey ?: "")) return false
         if (obj.optInt("requestedCount", 0) != _questionCountLimit) return false
         val seed = obj.optLong("seed", 0L)
@@ -191,7 +201,7 @@ class QuizState(
                 originalWords = restored
             }
         }
-        val rebuilt = QuizEngine.generateQuestions(loadedWords, count, fixedMode, seed = seed)
+        val rebuilt = QuizEngine.generateQuestions(loadedWords, count, fixedMode, allowedModes, seed = seed)
         if (rebuilt.isEmpty() || index !in rebuilt.indices) return false
         questions = rebuilt
         currentSeed = seed
@@ -224,6 +234,9 @@ class QuizState(
         return true
     }
 
+    /** 所选题型集合的稳定指纹，用于断点校验与存档比对 */
+    private fun allowedModesKey(): String = allowedModes.map { it.label }.sorted().joinToString(",")
+
     /**
      * 保存断点：答题与切题后调用，进程被杀也能接着做。
      * 答完还没点下一题时把题号前进一位，退出再进入不会重复答同一题。
@@ -235,6 +248,7 @@ class QuizState(
         val json = org.json.JSONObject().apply {
             put("dbName", dbName)
             put("mode", fixedMode?.label ?: "")
+            put("modes", allowedModesKey())
             put("sourceKey", sourceKey ?: "")
             put("requestedCount", _questionCountLimit)
             put("count", questions.size)
@@ -399,7 +413,7 @@ class QuizState(
             return
         }
         val count = wrong.size.coerceAtLeast(1)
-        questions = QuizEngine.generateQuestions(wrong, count, fixedMode = fixedMode)
+        questions = QuizEngine.generateQuestions(wrong, count, fixedMode = fixedMode, allowedModes = allowedModes)
         loadedWords = questions.map { it.word }.distinctBy { it.sourceId() }.ifEmpty { wrong }
         // 回顾轮不参与打卡统计，也不允许再次上报
         isReviewRound = true

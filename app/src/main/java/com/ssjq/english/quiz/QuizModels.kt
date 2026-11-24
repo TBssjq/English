@@ -10,8 +10,24 @@ sealed class QuizMode(val label: String, val weight: Float) {
     data object Spelling : QuizMode("拼写测试", 0.15f)
     data object AudioSpelling : QuizMode("听音拼写", 0.10f)
 
+    /**
+     * 题型说明：疯狂刷题选题型时展示给用户，
+     * 避免只看「英选中 / 中选英」两个缩写分不清题目长什么样。
+     */
+    val description: String
+        get() = when (this) {
+            is EnSelectCn -> "看英文单词，从 4 个中文释义里选"
+            is CnSelectEn -> "看中文释义，从 4 个英文单词里选"
+            is AudioSelect -> "听发音，从 4 个中文释义里选"
+            is Spelling -> "看中文释义，手动拼写英文单词"
+            is AudioSpelling -> "听发音，手动拼写英文单词"
+        }
+
     companion object {
         val all: List<QuizMode> = listOf(EnSelectCn, CnSelectEn, AudioSelect, Spelling, AudioSpelling)
+
+        /** 按 label 反查模式，用于把路由里传的字串还原成模式集合 */
+        fun fromLabel(label: String): QuizMode? = all.firstOrNull { it.label == label }
     }
 }
 

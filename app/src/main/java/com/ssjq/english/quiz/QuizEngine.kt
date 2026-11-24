@@ -19,24 +19,30 @@ object QuizEngine {
      * @param words 全部候选单词（用于抽取题目 + 生成干扰项）
      * @param count 题目数量
      * @param fixedMode 非 null 时所有题目使用此模式；null 时按权重随机
+     * @param allowedModes 随机模式下的题型白名单（空集合 = 全部题型参与），
+     *        用于疯狂刷题里用户自选题型后按勾选结果出题
      * @param seed 随机种子（可传 null 用默认）
      */
     fun generateQuestions(
         words: List<WordDetail>,
         count: Int = 20,
         fixedMode: QuizMode? = null,
+        allowedModes: Set<QuizMode> = emptySet(),
         seed: Long? = null,
     ): List<QuizQuestion> {
         if (words.isEmpty()) return emptyList()
         val random = if (seed != null) Random(seed) else Random
         val questionWords = pickWordsForQuestions(words, count, random)
+        // 题型白名单：用户勾掉的题型不再参与随机，保证题目池与所选一致；
+        // 传空集合时回退到全部题型，避免上游漏传导致无题可出
+        val modePool = if (allowedModes.isEmpty()) QuizMode.all else QuizMode.all.filter { it in allowedModes }
         val result = mutableListOf<QuizQuestion>()
         var lastMode1: QuizMode? = null
         var lastMode2: QuizMode? = null
 
         for ((index, word) in questionWords.withIndex()) {
-            // 固定模式时直接用 fixedMode；否则按权重随机（连续 3 题不重复）
-            val mode = fixedMode ?: pickMode(lastMode1, lastMode2, random)
+            // 固定模式时直接用 fixedMode；否则在所选题型里按权重随机（连续 3 题不重复）
+            val mode = fixedMode ?: pickMode(modePool, lastMode1, lastMode2, random)
             val question = buildQuestion(
                 id = index,
                 word = word,
@@ -51,11 +57,16 @@ object QuizEngine {
         return result
     }
 
-    /** 加权随机选择模式，保证连续 3 题不重复 */
-    private fun pickMode(last1: QuizMode?, last2: QuizMode?, random: Random): QuizMode {
-        val candidates = QuizMode.all.toMutableList()
-        // 连续 2 题相同则第 3 题必须切换
-        if (last1 != null && last2 != null && last1 == last2) {
+    /** 在所选题型内加权随机选择模式，保证连续 3 题不重复 */
+    private fun pickMode(
+        modePool: List<QuizMode>,
+        last1: QuizMode?,
+        last2: QuizMode?,
+        random: Random,
+    ): QuizMode {
+        val candidates = modePool.toMutableList()
+        // 连续 2 题相同则第 3 题必须切换（只勾了 1 种题型时无从切换，保持原样）
+        if (last1 != null && last2 != null && last1 == last2 && candidates.size > 1) {
             candidates.remove(last1)
         }
         val totalWeight = candidates.sumOf { it.weight.toDouble() }
