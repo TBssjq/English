@@ -34,7 +34,11 @@ data class QuizRoute(
 )
 
 /** 搜索页 */
-data class SearchRoute(val dbName: String)
+data class SearchRoute(
+    val dbName: String,
+    /** 进入搜索页时预填并自动执行的关键词，供词卡查词入口使用 */
+    val initialQuery: String = "",
+)
 
 /** 用户词单类型：错题本 / 收藏夹 */
 enum class LibraryType { WRONG, FAVORITE }

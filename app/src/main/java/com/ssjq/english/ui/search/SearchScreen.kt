@@ -40,6 +40,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,11 +82,13 @@ fun SearchScreen(
     dbName: String,
     onBack: () -> Unit,
     onWordClick: (String) -> Unit,
+    /** 外部带入的初始关键词：进入页面即自动搜索，用于词卡上的查词入口 */
+    initialQuery: String = "",
 ) {
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
-    var keyword by remember { mutableStateOf("") }
+    var keyword by remember(initialQuery) { mutableStateOf(initialQuery) }
     var results by remember { mutableStateOf<List<WordDetail>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
     // 全应用共享的背景采样层
@@ -123,6 +126,11 @@ fun SearchScreen(
                 if (token == searchToken) searching = false
             }
         }
+    }
+
+    // 带初始关键词进入时立即执行一次搜索，避免用户还要再敲一次回车
+    LaunchedEffect(initialQuery) {
+        if (initialQuery.isNotBlank()) doSearch()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {

@@ -7,6 +7,8 @@ import com.ssjq.english.ui.common.glassShadow
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,12 +40,14 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -60,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -460,15 +465,8 @@ fun CrazyQuizScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (wrongCount == 0) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Filled.Close, null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("暂无错题", style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                                Text("暂无错题记录", style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             } else {
                                 Text("$wrongCount 题", style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
@@ -512,15 +510,8 @@ fun CrazyQuizScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (favoriteCount == 0) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Filled.Close, null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("暂无收藏", style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                                Text("暂无收藏单词", style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             } else {
                                 Text("$favoriteCount 题", style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
@@ -578,109 +569,243 @@ fun CrazyQuizScreen(
     }
 
     if (showCountDialog) {
-        val options = listOf(10, 20, 30, 50, 100)
+        val countOptions = listOf(10, 20, 30, 50, 100)
+        val palette = LocalGlassPalette.current
+        // 面板用高不透明度底色：否则下层的「错题本 / 收藏夹 / 词库题目」卡片会透过玻璃，
+        // 和弹窗里的题型、题量看成一整块内容（竖屏下尤其像同一个列表）
+        val panelSurface = if (palette.isDark) {
+            Color(0xFF17191D).copy(alpha = 0.97f)
+        } else {
+            Color(0xFFF6F7F9).copy(alpha = 0.97f)
+        }
+        // 竖屏高度有限：面板最多占屏幕 78%，内部题型区可滚动，按钮固定贴在面板底部
+        val maxPanelHeight = (LocalConfiguration.current.screenHeightDp * 0.78f).dp
+        // 弹窗内显式声明本轮题源，和下层题源卡片区分开
+        val sourceSummary = when (selectedSource) {
+            CrazyQuizSource.WRONG -> "错题本 · 共 $wrongCount 题"
+            CrazyQuizSource.FAVORITE -> "收藏夹 · 共 $favoriteCount 题"
+            CrazyQuizSource.LIBRARY -> "词库题目 · ${
+                selectedDb?.let { LibraryCatalog.displayName(it) } ?: "未选词库"
+            }"
+            null -> "未选择题源"
+        }
         LiquidGlassDialog(
             backdrop = liquidBackdrop,
             onDismissRequest = { showCountDialog = false },
+            surfaceColor = panelSurface,
         ) {
-            Text("选择题型与题量", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "题型可多选，本轮只出勾选的题型；至少保留一种",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(14.dp))
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                    .heightIn(max = maxPanelHeight),
             ) {
-                Text(
-                    "题型 · 已选 ${selectedModes.size}/${QuizMode.all.size}",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                QuizMode.all.forEach { mode ->
-                    val checked = selectedModes.contains(mode)
-                    LiquidGlassListItem(
-                        backdrop = liquidBackdrop,
-                        onClick = {
-                            // 至少保留一种题型：勾掉的最后一项不允许取消
-                            if (checked && selectedModes.size <= 1) {
-                                Toast.makeText(context, "至少保留一种题型", Toast.LENGTH_SHORT).show()
-                            } else {
-                                selectedModes = if (checked) selectedModes - mode else selectedModes + mode
-                            }
-                        },
-                        selected = checked,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    mode.label,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    mode.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = if (checked) "已选" else "未选",
-                                tint = if (checked) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                // ① 标题 + 题源（只读摘要，不可在弹窗内改动）
+                Text("刷题设置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(GlassShapes.Item)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.MenuBook,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "题源",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        sourceSummary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                Spacer(Modifier.height(12.dp))
+
+                // ② 中部可滚动区：题型 → 题量，两块各自带标题与说明
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "题型",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "可多选 · 已选 ${selectedModes.size} 种，共 ${QuizMode.all.size} 种",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        QuizMode.all.forEach { mode ->
+                            val checked = selectedModes.contains(mode)
+                            LiquidGlassListItem(
+                                backdrop = liquidBackdrop,
+                                onClick = {
+                                    // 至少保留一种题型：勾掉的最后一项不允许取消
+                                    if (checked && selectedModes.size <= 1) {
+                                        Toast.makeText(context, "至少保留一种题型", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        selectedModes = if (checked) selectedModes - mode else selectedModes + mode
+                                    }
                                 },
-                                modifier = Modifier.size(22.dp),
-                            )
+                                selected = checked,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            mode.label,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            mode.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Icon(
+                                        imageVector = Icons.Filled.CheckCircle,
+                                        contentDescription = if (checked) "已选" else "未选",
+                                        tint = if (checked) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                                        },
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                }
+                            }
                         }
                     }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "题量",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                options.forEach { count ->
-                    val saved = savedCounts.contains(count)
-                    LiquidGlassListItem(
-                        backdrop = liquidBackdrop,
-                        onClick = { startSelectedQuiz(count) },
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "题量",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "本轮题目数，点选后按底部按钮开始",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 13.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                if (!saved) "$count 题" else "$count 题 · 可继续上次",
-                                fontWeight = if (!saved) FontWeight.Normal else FontWeight.SemiBold,
-                            )
+                        countOptions.forEach { count ->
+                            val isCurrent = count == quizCount
+                            val saved = savedCounts.contains(count)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp)
+                                        .clip(GlassShapes.Item)
+                                        .background(
+                                            if (isCurrent) {
+                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                            } else {
+                                                MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+                                            }
+                                        )
+                                        .border(
+                                            width = if (isCurrent) 2.dp else 1.dp,
+                                            color = if (isCurrent) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                            },
+                                            shape = GlassShapes.Item,
+                                        )
+                                        .clickable { quizCount = count },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        "$count",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                    )
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    if (saved) "可继续" else "题",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (saved) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
                         }
                     }
+                    Spacer(Modifier.height(6.dp))
                 }
-                TextButton(
-                    onClick = { showCountDialog = false },
+
+                // ③ 固定底部操作区：始终可见，不随中部内容滚动
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                Spacer(Modifier.height(12.dp))
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("取消") }
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { showCountDialog = false },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("取消") }
+                    Button(
+                        onClick = { startSelectedQuiz(quizCount) },
+                        modifier = Modifier
+                            .weight(2f)
+                            .height(46.dp),
+                        shape = GlassShapes.PanelBlock(),
+                    ) {
+                        Text(
+                            "开始刷题 · $quizCount 题",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
             }
         }
     }

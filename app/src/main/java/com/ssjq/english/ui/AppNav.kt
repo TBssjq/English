@@ -444,6 +444,8 @@ fun AppNav() {
                     // 词库搜索只是看一下词条，进入详情而不是另一本词库的背诵会话
                     navigate(WordDetailRoute(targetDb, targetWordId))
                 },
+                // 背面大号单词：进入搜索页并带上初始关键词，直接展示查词结果
+                onOpenSearch = { targetDb, query -> navigate(SearchRoute(targetDb, query)) },
             )
 
             is WordStudyRoute -> WordStudyScreen(
@@ -455,6 +457,7 @@ fun AppNav() {
                     // 词库搜索只是看一下词条，进入详情而不是另一本词库的背诵会话
                     navigate(WordDetailRoute(targetDb, targetWordId))
                 },
+                onOpenSearch = { targetDb, query -> navigate(SearchRoute(targetDb, query)) },
             )
 
             is LibraryRoute -> LibraryScreen(
@@ -468,6 +471,7 @@ fun AppNav() {
 
             is SearchRoute -> SearchScreen(
                 dbName = route.dbName,
+                initialQuery = route.initialQuery,
                 onBack = { back() },
                 onWordClick = { navigate(WordDetailRoute(route.dbName, it)) },
             )

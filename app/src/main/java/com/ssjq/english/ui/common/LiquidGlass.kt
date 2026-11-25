@@ -397,6 +397,8 @@ fun LiquidGlassDialog(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     dismissOnClickOutside: Boolean = true,
+    /** 面板底色：内容较密时传高不透明度色板，避免下层页面文字透过来造成歧义 */
+    surfaceColor: Color? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val token = remember { Any() }
@@ -468,6 +470,7 @@ fun LiquidGlassDialog(
             LiquidGlassDialogSurface(
                 backdrop = backdrop,
                 modifier = modifier.fillMaxWidth(0.92f),
+                surfaceColor = surfaceColor,
                 content = content,
             )
         }
